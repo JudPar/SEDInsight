@@ -47,8 +47,8 @@ export default function Page() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingPointIndex, setEditingPointIndex] = useState(null);
 
-  // Estado de Autenticación
-  const [isEditable, setIsEditable] = useState(false);
+  // El acceso a esta pantalla exige una sesión Supabase válida mediante AuthGate.
+  const isEditable = true;
   
   const mapRef = useRef(null);
 
@@ -589,36 +589,8 @@ export default function Page() {
     });
   }
 
-  // Permisos de edición
   async function checkEditPermission() {
-    if (isEditable) return true;
-    
-    const password = prompt('🔒 Ingrese la contraseña de edición:');
-    if (!password) return false;
-    
-    try {
-      const res = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
-      });
-      const data = await res.json();
-      if (data && data.success) {
-        setIsEditable(true);
-        return true;
-      } else {
-        alert('❌ Contraseña incorrecta');
-        return false;
-      }
-    } catch {
-      if (password === 'geopluz2026') {
-        setIsEditable(true);
-        return true;
-      } else {
-        alert('❌ Contraseña incorrecta');
-        return false;
-      }
-    }
+    return true;
   }
 
   // Acciones en el mapa
@@ -736,49 +708,17 @@ export default function Page() {
   }
 
   // Eliminar Falla
-  async function handleDeletePoint(index) {
-    const allowed = await checkEditPermission();
-    if (!allowed) return;
-    if (confirm('¿Estás seguro de que deseas eliminar esta falla?')) {
-      const point = numberedPointsList[index];
-      const updated = numberedPointsList.filter((_, i) => i !== index);
-      setNumberedPointsList(updated);
-      if (point.id) {
-         supabase.from('fallas').delete().eq('id', point.id).then();
-      }
-    }
+  async function handleDeletePoint() {
+    alert('Eliminar fallas está deshabilitado por la política de seguridad actual.');
   }
 
   // Eliminar SED y Llave
-  async function handleDeleteSed(sedId) {
-    const allowed = await checkEditPermission();
-    if (!allowed) return;
-    if (confirm(`¿Eliminar la SED ${sedId} por completo?`)) {
-      const updated = { ...localDatabase };
-      delete updated[sedId];
-      setLocalDatabase(updated);
-      if (currentSedId === sedId) {
-        setCurrentSedId('');
-        setCurrentLlaveId('');
-      }
-      fetch(`/api/seds?sed_id=${sedId}`, { method: 'DELETE' }).catch(console.error);
-    }
+  async function handleDeleteSed() {
+    alert('Eliminar SEDs está deshabilitado por la política de seguridad actual.');
   }
 
-  async function handleDeleteLlave(sedId, llaveId) {
-    const allowed = await checkEditPermission();
-    if (!allowed) return;
-    if (confirm(`¿Eliminar la llave ${llaveId} de la SED ${sedId}?`)) {
-      const updated = { ...localDatabase };
-      if (updated[sedId] && updated[sedId].llaves) {
-        delete updated[sedId].llaves[llaveId];
-        setLocalDatabase(updated);
-        if (currentSedId === sedId && currentLlaveId === llaveId) {
-           setCurrentLlaveId('');
-        }
-        fetch(`/api/seds?sed_id=${sedId}&llave_code=${llaveId}`, { method: 'DELETE' }).catch(console.error);
-      }
-    }
+  async function handleDeleteLlave() {
+    alert('Eliminar llaves está deshabilitado por la política de seguridad actual.');
   }
 
   // Reubicación
@@ -794,15 +734,7 @@ export default function Page() {
     setCachedSeds(sedsToSave);
 
     if (!isSupabaseConfigured || !supabase) {
-      try {
-        await fetch('/api/seds', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sedsToSave)
-        });
-      } catch (err) {
-        console.warn('Error guardando SEDs vía API:', err.message);
-      }
+      console.warn('Supabase no está configurado. No se sincronizaron cambios.');
       return;
     }
     try {
@@ -965,11 +897,7 @@ export default function Page() {
             }));
           }
         } else {
-          await fetch('/api/fallas', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(fallasBatch)
-          });
+          throw new Error('Supabase no está configurado. No se sincronizaron fallas.');
         }
       }
       alert('✅ ¡Datos sincronizados exitosamente con la Base de Datos Principal en la Nube!');

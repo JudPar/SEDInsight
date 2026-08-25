@@ -1,7 +1,16 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getAuthenticatedSupabase } from '@/lib/supabase-server';
+
+async function authenticatedClient(request) {
+  const result = await getAuthenticatedSupabase(request);
+  if (result.error) return { response: NextResponse.json({ error: result.error }, { status: 401 }) };
+  return result;
+}
 
 export async function GET(request) {
+  const auth = await authenticatedClient(request);
+  if (auth.response) return auth.response;
+  const { supabase } = auth;
   const { searchParams } = new URL(request.url);
   const sedId = searchParams.get('sed_id');
   const minLat = searchParams.get('minLat');
@@ -24,13 +33,16 @@ export async function GET(request) {
   }
   
   const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: 'No se pudieron cargar las fallas.' }, { status: 500 });
   
   return NextResponse.json(data);
 }
 
 export async function POST(request) {
   try {
+    const auth = await authenticatedClient(request);
+    if (auth.response) return auth.response;
+    const { supabase } = auth;
     const body = await request.json();
     if (Array.isArray(body)) {
       // Inserción en lote (Bulk Insert)
@@ -43,12 +55,15 @@ export async function POST(request) {
       return NextResponse.json(data[0]);
     }
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'No se pudo guardar la falla.' }, { status: 500 });
   }
 }
 
 export async function PUT(request) {
   try {
+    const auth = await authenticatedClient(request);
+    if (auth.response) return auth.response;
+    const { supabase } = auth;
     const body = await request.json();
     const { id, ...updates } = body;
     if (!id) return NextResponse.json({ error: 'Falta el id' }, { status: 400 });
@@ -57,20 +72,10 @@ export async function PUT(request) {
     if (error) throw error;
     return NextResponse.json(data[0]);
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'No se pudo actualizar la falla.' }, { status: 500 });
   }
 }
 
-export async function DELETE(request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-    if (!id) return NextResponse.json({ error: 'Falta el id' }, { status: 400 });
-    
-    const { error } = await supabase.from('fallas').delete().eq('id', id);
-    if (error) throw error;
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+export async function DELETE() {
+  return NextResponse.json({ error: 'Eliminar registros está deshabilitado.' }, { status: 405 });
 }

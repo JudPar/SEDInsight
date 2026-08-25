@@ -50,6 +50,15 @@ body {
   transition: background-color 0.3s, color 0.3s;
 }
 
+.auth-screen { width: 100%; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #071a2f, #0b4f7c); }
+.auth-card { width: min(400px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 28px; border: 1px solid rgba(255,255,255,.2); border-radius: 12px; background: var(--bg-card); box-shadow: 0 18px 50px rgba(0,0,0,.25); }
+.auth-card h1 { color: var(--accent-cyan); font-size: 24px; }
+.auth-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 8px; }
+.auth-card label { font-size: 12px; color: var(--text-muted); }
+.auth-card input { width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); color: var(--text-main); }
+.auth-error { color: var(--accent-danger) !important; margin: 0 !important; }
+.auth-logout { position: fixed; z-index: 10050; top: 10px; right: 12px; border: 1px solid var(--accent-cyan); border-radius: 5px; padding: 6px 10px; color: var(--accent-cyan); background: var(--bg-card); font-size: 11px; font-weight: 700; cursor: pointer; }
+
 /* === SIDEBAR === */
 #sidebar, .sidebar {
   width: 460px;

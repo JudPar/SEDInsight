@@ -1,9 +1,18 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getAuthenticatedSupabase } from '@/lib/supabase-server';
 import { hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
 
-export async function GET() {
+async function authenticatedClient(request) {
+  const result = await getAuthenticatedSupabase(request);
+  if (result.error) return { response: NextResponse.json({ error: result.error }, { status: 401 }) };
+  return result;
+}
+
+export async function GET(request) {
   try {
+    const auth = await authenticatedClient(request);
+    if (auth.response) return auth.response;
+    const { supabase } = auth;
     const { data: sedsData, error: sedsError } = await supabase.from('seds').select('*');
     if (sedsError) throw sedsError;
     
@@ -28,12 +37,15 @@ export async function GET() {
     
     return NextResponse.json(db);
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'No se pudo cargar la información solicitada.' }, { status: 500 });
   }
 }
 
 export async function POST(request) {
   try {
+    const auth = await authenticatedClient(request);
+    if (auth.response) return auth.response;
+    const { supabase } = auth;
     const db = await request.json();
     const sedsBatch = [];
     const llavesBatch = [];
@@ -77,27 +89,10 @@ export async function POST(request) {
 
     return NextResponse.json({ success: true, countSeds: sedsBatch.length, countLlaves: llavesBatch.length });
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'No se pudieron guardar los cambios.' }, { status: 500 });
   }
 }
 
-export async function DELETE(request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const sedId = searchParams.get('sed_id');
-    const llaveCode = searchParams.get('llave_code');
-    
-    if (sedId && llaveCode) {
-      const { error } = await supabase.from('llaves').delete().match({ sed_id: sedId, llave_code: llaveCode });
-      if (error) throw error;
-    } else if (sedId) {
-      const { error } = await supabase.from('seds').delete().eq('id', sedId);
-      if (error) throw error;
-    } else {
-      return NextResponse.json({ error: 'Falta sed_id' }, { status: 400 });
-    }
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+export async function DELETE() {
+  return NextResponse.json({ error: 'Eliminar registros está deshabilitado.' }, { status: 405 });
 }

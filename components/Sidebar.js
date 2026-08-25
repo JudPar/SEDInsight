@@ -235,7 +235,7 @@ export default function Sidebar({
               className="btn btn-cyan" 
               style={{ marginTop: '8px' }}
               onClick={onSaveToMainDatabase}
-              title="Solicita contraseña y sincroniza con la Base de Datos Principal en Supabase"
+              title="Sincroniza los cambios con la Base de Datos Principal en Supabase"
             >
               <i className="fa-solid fa-cloud-arrow-up"></i> ☁️ Guardar en Base Principal (Nube)
             </button>

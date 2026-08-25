@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
+import { getAuthenticatedSupabase } from '@/lib/supabase-server';
 
 export async function POST(request) {
   try {
+    const session = await getAuthenticatedSupabase(request);
+    if (session.error) return NextResponse.json({ error: session.error }, { status: 401 });
     const formData = await request.formData();
     const file = formData.get('file');
     const fileName = formData.get('fileName') || `falla_${Date.now()}.jpg`;
@@ -99,6 +102,6 @@ export async function POST(request) {
 
   } catch (err) {
     console.error('Error subiendo a Google Drive:', err);
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    return NextResponse.json({ success: false, error: 'No se pudo subir la imagen.' }, { status: 500 });
   }
 }

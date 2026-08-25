@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { FAULT_CAUSES, DEFAULT_CAUSE_COLOR } from '@/lib/constants';
+import { supabase } from '@/lib/supabase';
 
 
 export default function FaultForm({
@@ -130,9 +131,12 @@ export default function FaultForm({
         const data = new FormData();
         data.append('file', compressed);
         data.append('fileName', `${formData.ticket || 'falla'}_${Date.now()}.jpg`);
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error('Tu sesión expiró. Inicia sesión nuevamente.');
 
         const res = await fetch('/api/upload-drive', {
           method: 'POST',
+          headers: { Authorization: `Bearer ${session.access_token}` },
           body: data
         });
         const result = await res.json();
