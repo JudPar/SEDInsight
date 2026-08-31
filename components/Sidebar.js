@@ -1,16 +1,31 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import FaultTable from './FaultTable';
+import ProjectPanel from './ProjectPanel';
 import SearchableSedSelect, { sortSedIds } from './SearchableSedSelect';
 import { CIRCUIT_STATUSES } from '@/lib/circuitAnalysis';
+import { describeParetoCandidates } from '@/lib/branchIndicators';
 
 const CABLE_COLORS = ['#e53935', '#d81b60', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#546e7a'];
+
+function formatKilometers(meters) {
+  return `${(Number(meters || 0) / 1000).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km`;
+}
+
+function formatBranchMeters(meters) {
+  const value = Number(meters);
+  if (!Number.isFinite(value)) return '-';
+  const fractionDigits = Math.abs(value) < 10 ? 2 : 1;
+  return `${value.toLocaleString('es-PE', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })} m`;
+}
 
 export default function Sidebar({
   seds,
   faultPoints,
   filteredFaultPoints,
+  analysisFaultAssignments,
+  analysisCircuitFaultTotal,
   currentSedId,
   setCurrentSedId,
   currentLlaveId,
@@ -26,11 +41,18 @@ export default function Sidebar({
   circuitNote,
   cableGroups,
   circuitStatus,
+  circuitPhase1Analysis,
+  selectedAnalysisSegmentId,
+  filterByAnalysisSegment,
   isSegmentSelectionMode,
   selectedLineCount,
   selectedDistance,
   onSaveCircuitNote,
   onSaveCircuitStatus,
+  onAnalyzeCircuit,
+  onSelectAnalysisSegment,
+  onFilterSelectedAnalysisSegment,
+  onShowAllAnalysisFaults,
   onToggleSegmentSelection,
   onStartEditCableGroup,
   onCancelEditCableGroup,
@@ -40,7 +62,6 @@ export default function Sidebar({
   onImportJson,
   onImportJsonText,
   onImportExcel,
-  onExportJson,
   onExportExcel,
   onExportPdf,
   onSaveToMainDatabase,
@@ -48,9 +69,21 @@ export default function Sidebar({
   onDeleteLlave,
   onEditPoint,
   onDeletePoint,
+  deletingPointId,
   onRelocatePoint,
   onFlyToPoint,
-  onFaultTableExpanded
+  onMajorOverlayChange,
+  dataSource,
+  onDownloadProject,
+  onOpenLocalProject,
+  onGetActiveLocalProject,
+  onCheckMainDatabase,
+  onDownloadMainProject,
+  onStageProject,
+  onDiscardStaging,
+  onFinalizeProject,
+  onDeleteMainProject,
+  onCloseLocalProject
 }) {
   const jsonInputRef = useRef(null);
   const excelInputRef = useRef(null);
@@ -67,6 +100,15 @@ export default function Sidebar({
 
   useEffect(() => setNoteDraft(circuitNote || ''), [circuitNote, currentSedId, currentLlaveId]);
   useEffect(() => setStatusDraft(circuitStatus || 'cargado'), [circuitStatus, currentSedId, currentLlaveId]);
+
+  useEffect(() => {
+    onMajorOverlayChange?.('paste-json', showJsonPasteModal);
+    return () => onMajorOverlayChange?.('paste-json', false);
+  }, [showJsonPasteModal, onMajorOverlayChange]);
+
+  const reportFaultTableOverlay = useCallback((isOpen) => {
+    onMajorOverlayChange?.('fault-table', isOpen);
+  }, [onMajorOverlayChange]);
 
   useEffect(() => {
     setEditingCableGroupId(null);
@@ -98,6 +140,14 @@ export default function Sidebar({
   };
 
   const currentMasterSed = getMasterSedInfo(currentSedId);
+  const selectedAnalysisSegment = circuitPhase1Analysis?.analysisSegmentIndicators?.analysisSegments
+    ?.find(segment => segment.analysisSegmentId === selectedAnalysisSegmentId) || null;
+  const priorityStatus = circuitPhase1Analysis?.analysisSegmentIndicators?.priorityStatus;
+  const priorityCandidates = circuitPhase1Analysis?.analysisSegmentIndicators?.priorityCandidates || [];
+  const priorityCandidateIds = new Set(priorityCandidates.map(segment => segment.analysisSegmentId));
+  const priorityDescriptions = new Map(describeParetoCandidates(priorityCandidates)
+    .map(description => [description.branchId, description]));
+  const selectedPriorityDescription = priorityDescriptions.get(selectedAnalysisSegmentId) || null;
 
   const handleProcessPastedJson = () => {
     if (!pastedJsonText.trim()) {
@@ -173,6 +223,22 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-content">
+        <ProjectPanel
+          dataSource={dataSource}
+          hasData={hasData || faultPoints.length > 0}
+          onDownloadProject={onDownloadProject}
+          onOpenLocalProject={onOpenLocalProject}
+          onGetActiveLocalProject={onGetActiveLocalProject}
+          onCheckMainDatabase={onCheckMainDatabase}
+          onDownloadMainProject={onDownloadMainProject}
+          onStageProject={onStageProject}
+          onDiscardStaging={onDiscardStaging}
+          onFinalizeProject={onFinalizeProject}
+          onDeleteMainProject={onDeleteMainProject}
+          onCloseLocalProject={onCloseLocalProject}
+          onMajorOverlayChange={onMajorOverlayChange}
+        />
+
         {/* Ocultos */}
         <input 
           type="file" 
@@ -208,6 +274,7 @@ export default function Sidebar({
               className="btn btn-green" 
               style={{ flex: 1, padding: '7px 8px', fontSize: '11px' }}
               onClick={() => jsonInputRef.current && jsonInputRef.current.click()}
+              disabled={!isEditable}
               title="Subir archivo JSON desde tu explorador de archivos"
             >
               <i className="fa-solid fa-file-circle-plus"></i> Cargar JSON
@@ -216,18 +283,10 @@ export default function Sidebar({
               className="btn btn-orange" 
               style={{ flex: 1, padding: '7px 8px', fontSize: '11px' }}
               onClick={() => setShowJsonPasteModal(true)}
+              disabled={!isEditable}
               title="Pegar el texto/código del JSON directamente (si los archivos están bloqueados)"
             >
               <i className="fa-solid fa-paste"></i> Pegar JSON
-            </button>
-            <button 
-              className="btn btn-outline" 
-              style={{ width: 'auto', padding: '7px 10px', fontSize: '11px' }}
-              onClick={onExportJson}
-              disabled={!hasData}
-              title="Descargar respaldo JSON"
-            >
-              <i className="fa-solid fa-download"></i>
             </button>
           </div>
           {hasData && (
@@ -235,6 +294,7 @@ export default function Sidebar({
               className="btn btn-cyan" 
               style={{ marginTop: '8px' }}
               onClick={onSaveToMainDatabase}
+              disabled={!isEditable}
               title="Sincroniza los cambios con la Base de Datos Principal en Supabase"
             >
               <i className="fa-solid fa-cloud-arrow-up"></i> ☁️ Guardar en Base Principal (Nube)
@@ -282,6 +342,7 @@ export default function Sidebar({
           <button 
             className="btn btn-orange" 
             onClick={() => excelInputRef.current && excelInputRef.current.click()}
+            disabled={!isEditable}
           >
             <i className="fa-solid fa-upload"></i> Cargar Histórico Excel (.xlsx)
           </button>
@@ -298,7 +359,7 @@ export default function Sidebar({
             <label>Subestación de Distribución (SED):</label>
             <div style={{ display: 'flex', gap: '6px' }}>
               <SearchableSedSelect seds={seds} value={currentSedId || ''} onChange={setCurrentSedId} disabled={!hasData} />
-              {currentSedId && (
+              {isEditable && currentSedId && (
                 <button 
                   className="btn btn-outline" 
                   title="Eliminar SED Seleccionada"
@@ -325,7 +386,7 @@ export default function Sidebar({
                   <option key={llave} value={llave}>{llave}</option>
                 ))}
               </select>
-              {currentSedId && currentLlaveId && (
+              {isEditable && currentSedId && currentLlaveId && (
                 <button 
                   className="btn btn-outline" 
                   title="Eliminar Llave Seleccionada"
@@ -362,20 +423,229 @@ export default function Sidebar({
         <details className="sidebar-section">
           <summary><span><i className="fa-solid fa-chart-line"></i> 3. Análisis del circuito</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
+          <div className="form-group" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+            <label>Análisis automático</label>
+            <button className="btn btn-cyan" disabled={!currentLlaveId} onClick={onAnalyzeCircuit}>
+              <i className="fa-solid fa-chart-column"></i> Analizar circuito
+            </button>
+            {circuitPhase1Analysis && (
+              <div style={{ marginTop: '8px', padding: '8px 9px', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '10.5px', lineHeight: 1.45 }}>
+                <div style={{ fontWeight: 700, color: 'var(--accent-cyan)', marginBottom: '5px' }}>Resultado del circuito seleccionado</div>
+                <div><b>Longitud almacenada:</b> {formatKilometers(circuitPhase1Analysis.storedLengthMeters)}</div>
+                <div><b>Longitud geográfica:</b> {formatKilometers(circuitPhase1Analysis.geographicLengthMeters)}</div>
+                <div><b>Segmentos físicos:</b> {circuitPhase1Analysis.physicalSegments}</div>
+                <div><b>Duplicados ignorados:</b> {circuitPhase1Analysis.duplicatesIgnored}</div>
+                <div><b>Calibres detectados:</b> {circuitPhase1Analysis.detectedCalibres}</div>
+                <div><b>Sin calibre:</b> {circuitPhase1Analysis.segmentsWithoutCalibre}</div>
+
+                {circuitPhase1Analysis.faultAssignment && (
+                  <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '3px' }}>Asignación de fallas</div>
+                    <div>Fallas del circuito: {circuitPhase1Analysis.faultAssignment.totalFaults}</div>
+                    <div>Asignadas a tramos: {circuitPhase1Analysis.analysisSegmentIndicators?.faultsAssignedToAnalysisSegments ?? 0}</div>
+                    <div>Fallas en nodos/bifurcaciones: {circuitPhase1Analysis.faultAssignment.junctionFaults}</div>
+                    <div>Sin coordenadas: {circuitPhase1Analysis.faultAssignment.missingCoordinates}</div>
+                    <div>Alta confianza: {circuitPhase1Analysis.faultAssignment.highConfidence}</div>
+                    <div>Requieren revisión: {circuitPhase1Analysis.faultAssignment.reviewConfidence}</div>
+                    <div>Baja confianza: {circuitPhase1Analysis.faultAssignment.lowConfidence}</div>
+                  </div>
+                )}
+
+                {circuitPhase1Analysis.topology && (
+                  <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '3px' }}>Topología</div>
+                    <div>Nodos: {circuitPhase1Analysis.topology.nodeCount}</div>
+                    <div>Bifurcaciones: {circuitPhase1Analysis.topology.bifurcationCount}</div>
+                    <div>Ramas: {circuitPhase1Analysis.topology.branchCount}</div>
+                    <div>Componentes: {circuitPhase1Analysis.topology.componentCount}</div>
+                    <div>Edges intranodo ignorados: {circuitPhase1Analysis.topology.intraNodeEdgeCount}</div>
+                    <div>Derivaciones de servicio ignoradas: {circuitPhase1Analysis.topology.terminalSpurCount} · {circuitPhase1Analysis.topology.excludedSpurLengthMeters.toLocaleString('es-PE', { maximumFractionDigits: 1 })} m</div>
+                    <div>Raíz: {circuitPhase1Analysis.topology.rootStatus === 'detected' ? 'detectada' : 'no determinada'}</div>
+                  </div>
+                )}
+
+                {circuitPhase1Analysis.analysisSegmentIndicators && (
+                  <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '3px' }}>Tramos de análisis</div>
+                    <div>Tramos: {circuitPhase1Analysis.analysisSegmentIndicators.totalAnalysisSegments}</div>
+                    <div>Tramo con más fallas: {circuitPhase1Analysis.analysisSegmentIndicators.analysisSegmentWithMostFaults || 'Sin datos'}</div>
+                    <div>Mayor fallas/km: {circuitPhase1Analysis.analysisSegmentIndicators.analysisSegmentWithHighestFaultsPerKm || 'Sin datos'}</div>
+                    <div>Fallas fuera de tramos: {circuitPhase1Analysis.analysisSegmentIndicators.faultsOutsideAnalysisSegments}</div>
+                    <div style={{ marginTop: '5px', padding: '5px', borderRadius: '4px', background: 'rgba(249, 168, 37, 0.09)' }}>
+                      <b>
+                        {priorityStatus === 'single'
+                          ? 'Tramo prioritario'
+                          : priorityStatus === 'multiple' ? 'Tramos candidatos prioritarios' : 'Priorización no disponible'}
+                      </b>
+                      {priorityStatus === 'multiple' && (
+                        <div style={{ marginTop: '2px', color: 'var(--text-muted)' }}>
+                          Ningún tramo supera simultáneamente a los demás en número de fallas y fallas/km.
+                        </div>
+                      )}
+                      {priorityStatus === 'insufficient_data' && (
+                        <div style={{ marginTop: '2px', color: 'var(--text-muted)' }}>No hay datos suficientes para comparar tramos.</div>
+                      )}
+                      {priorityCandidates.map(candidate => {
+                        const description = priorityDescriptions.get(candidate.analysisSegmentId);
+                        return (
+                        <button
+                          key={candidate.analysisSegmentId}
+                          type="button"
+                          onClick={() => onSelectAnalysisSegment?.(candidate.analysisSegmentId)}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            marginTop: '4px',
+                            padding: '5px',
+                            textAlign: 'left',
+                            borderRadius: '4px',
+                            border: candidate.analysisSegmentId === selectedAnalysisSegmentId ? '1px solid #d81b60' : '1px solid var(--border-color)',
+                            background: candidate.analysisSegmentId === selectedAnalysisSegmentId ? 'rgba(216, 27, 96, 0.12)' : 'transparent',
+                            color: 'inherit',
+                            cursor: 'pointer',
+                            fontSize: '9.5px'
+                          }}
+                        >
+                          <b>{candidate.analysisSegmentId}</b> · {formatBranchMeters(candidate.lengthMeters)} · {candidate.faultCount} fallas · {candidate.faultsPerKm?.toFixed(2) ?? '-'} fallas/km
+                          <br />
+                          {candidate.faultShare.toFixed(1)}% · {candidate.calibreLabel} · high/review/low {candidate.highConfidenceFaults}/{candidate.reviewConfidenceFaults}/{candidate.lowConfidenceFaults} · {candidate.mainCause?.label || 'Sin causa'}
+                          {candidate.faultsPerKmToCircuitAverage !== null && (
+                            <> · {candidate.faultsPerKmToCircuitAverage.toFixed(2)}× promedio</>
+                          )}
+                          {description?.reasons?.length > 0 && (
+                            <><br /><span style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>{description.reasons.join(' · ')}</span></>
+                          )}
+                          {description?.recurrentCause && (
+                            <><br /><span>{description.recurrentCause}</span></>
+                          )}
+                        </button>
+                      );})}
+                    </div>
+                    <div style={{ overflowX: 'auto', marginTop: '5px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '9.5px' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left' }}>Tramo</th>
+                            <th>Long.</th>
+                            <th>Fallas</th>
+                            <th>F/km</th>
+                            <th>%</th>
+                            <th style={{ textAlign: 'left' }}>Calibre</th>
+                            <th style={{ textAlign: 'left' }}>Causa principal</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {circuitPhase1Analysis.analysisSegmentIndicators.analysisSegments.map(segment => {
+                            const isSelectedSegment = segment.analysisSegmentId === selectedAnalysisSegmentId;
+                            return (
+                            <tr
+                              key={segment.analysisSegmentId}
+                              onClick={() => onSelectAnalysisSegment?.(segment.analysisSegmentId)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') onSelectAnalysisSegment?.(segment.analysisSegmentId);
+                              }}
+                              tabIndex={0}
+                              aria-selected={isSelectedSegment}
+                              style={{
+                                cursor: 'pointer',
+                                background: isSelectedSegment ? 'rgba(216, 27, 96, 0.16)' : 'transparent',
+                                outline: isSelectedSegment ? '1px solid #d81b60' : 'none'
+                              }}
+                            >
+                              <td>
+                                {segment.analysisSegmentId}
+                                {priorityCandidateIds.has(segment.analysisSegmentId) && (
+                                  <span style={{ marginLeft: '3px', padding: '1px 3px', borderRadius: '3px', background: '#f9a825', color: '#212121', fontSize: '8px', fontWeight: 700 }}>
+                                    {priorityStatus === 'single' ? 'Prioritaria' : 'Candidata'}
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ textAlign: 'center' }}>{formatBranchMeters(segment.lengthMeters)}</td>
+                              <td style={{ textAlign: 'center' }}>{segment.faultCount}</td>
+                              <td style={{ textAlign: 'center' }}>{segment.faultsPerKm === null ? '-' : segment.faultsPerKm.toFixed(2)}</td>
+                              <td style={{ textAlign: 'center' }}>{segment.faultShare.toFixed(1)}%</td>
+                              <td>{segment.calibreLabel}</td>
+                              <td>{segment.mainCause?.label || '-'}</td>
+                            </tr>
+                          );})}
+                        </tbody>
+                      </table>
+                    </div>
+                    {selectedAnalysisSegment && (
+                      <div style={{ marginTop: '6px', padding: '6px', borderRadius: '4px', background: 'rgba(216, 27, 96, 0.08)' }}>
+                        <div><b>{selectedAnalysisSegment.analysisSegmentId}</b> · {formatBranchMeters(selectedAnalysisSegment.lengthMeters)}</div>
+                        <div>{selectedAnalysisSegment.faultCount} fallas · {selectedAnalysisSegment.faultsPerKm?.toFixed(2) ?? '-'} fallas/km · {selectedAnalysisSegment.faultShare.toFixed(1)}%</div>
+                        <div>Calibre: {selectedAnalysisSegment.calibreLabel}</div>
+                        {selectedAnalysisSegment.calibreStatus === 'mixed' && (
+                          <div>
+                            Desglose: {selectedAnalysisSegment.calibres
+                              .map(calibre => `${calibre.label} ${formatBranchMeters(calibre.lengthMeters)}`).join(' · ')}
+                          </div>
+                        )}
+                        <div>Confianza: {selectedAnalysisSegment.highConfidenceFaults} alta / {selectedAnalysisSegment.reviewConfidenceFaults} revisión / {selectedAnalysisSegment.lowConfidenceFaults} baja</div>
+                        <div>Causa principal: {selectedAnalysisSegment.mainCause?.label || 'Sin datos'}</div>
+                        {selectedPriorityDescription?.reasons?.length > 0 && (
+                          <div><b>Motivo Pareto:</b> {selectedPriorityDescription.reasons.join(' · ')}</div>
+                        )}
+                        {selectedPriorityDescription?.recurrentCause && <div>{selectedPriorityDescription.recurrentCause}</div>}
+                        <div style={{ display: 'flex', gap: '5px', marginTop: '5px' }}>
+                          <button className="btn btn-outline" style={{ padding: '4px 6px', fontSize: '9.5px' }} onClick={onFilterSelectedAnalysisSegment}>
+                            Ver fallas de este tramo
+                          </button>
+                          <button className="btn btn-outline" style={{ padding: '4px 6px', fontSize: '9.5px' }} onClick={onShowAllAnalysisFaults}>
+                            Mostrar todas
+                          </button>
+                        </div>
+                        <div style={{ marginTop: '3px', color: 'var(--text-muted)' }}>
+                          Mostrando {filteredFaultPoints.length} de {analysisCircuitFaultTotal} fallas{filterByAnalysisSegment ? ' · filtro activo' : ''}.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {circuitPhase1Analysis.lengthByCalibre.length > 0 && (
+                  <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+                    {circuitPhase1Analysis.lengthByCalibre.map(item => (
+                      <div key={item.normalizedLabel} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '3px' }}>
+                        <span title={`Agrupado como ${item.normalizedLabel}`}>{item.originalLabels.map(label => label.trim()).join(' / ')}</span>
+                        <b style={{ whiteSpace: 'nowrap' }}>{formatKilometers(item.storedLengthMeters)}</b>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <details style={{ marginTop: '7px' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Detalles y advertencias</summary>
+                  <div style={{ marginTop: '5px', color: 'var(--text-muted)' }}>
+                    <div>Registros originales: {circuitPhase1Analysis.originalRecords}</div>
+                    <div>Longitud original antes de deduplicar: {formatKilometers(circuitPhase1Analysis.originalStoredLengthMeters)}</div>
+                    <div>Longitud cero o inválida: {circuitPhase1Analysis.zeroStoredLengthSegments + circuitPhase1Analysis.invalidStoredLengthSegments}</div>
+                    <div>Candidatos no eléctricos: {circuitPhase1Analysis.nonElectricalCandidates}</div>
+                    {circuitPhase1Analysis.warnings.length > 0 ? (
+                      <ul style={{ margin: '5px 0 0', paddingLeft: '17px' }}>
+                        {circuitPhase1Analysis.warnings.map(warning => <li key={warning.code}>{warning.message}</li>)}
+                      </ul>
+                    ) : <div style={{ marginTop: '4px' }}>Sin advertencias de calidad.</div>}
+                  </div>
+                </details>
+              </div>
+            )}
+          </div>
           <div className="card-title"><i className="fa-solid fa-pen-to-square"></i> Estado y conclusiones</div>
           <div className="form-group">
             <label>Estado del circuito:</label>
             <div style={{ display: 'flex', gap: '6px' }}>
-              <select className="input-control" value={statusDraft} disabled={!currentLlaveId} onChange={(e) => setStatusDraft(e.target.value)}>
+              <select className="input-control" value={statusDraft} disabled={!isEditable || !currentLlaveId} onChange={(e) => setStatusDraft(e.target.value)}>
                 {Object.entries(CIRCUIT_STATUSES).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}
               </select>
-              <button className="btn btn-cyan" style={{ width: 'auto', whiteSpace: 'nowrap' }} disabled={!currentLlaveId} onClick={() => onSaveCircuitStatus(statusDraft)}>Guardar estado</button>
+              <button className="btn btn-cyan" style={{ width: 'auto', whiteSpace: 'nowrap' }} disabled={!isEditable || !currentLlaveId} onClick={() => onSaveCircuitStatus(statusDraft)}>Guardar estado</button>
             </div>
           </div>
           <div className="form-group">
-            <label>Nota visible en el mapa (SED + llave seleccionadas):</label>
-            <textarea className="input-control" rows="3" value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} disabled={!currentLlaveId} placeholder="Conclusión o recomendación del análisis..." />
-            <button className="btn btn-cyan" style={{ marginTop: '6px' }} disabled={!currentLlaveId} onClick={() => onSaveCircuitNote(noteDraft.trim())}>
+            <label>Conclusión del análisis:</label>
+            <textarea className="input-control" rows="3" value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} disabled={!isEditable || !currentLlaveId} placeholder="Conclusión del análisis visible en el mapa..." />
+            <button className="btn btn-cyan" style={{ marginTop: '6px' }} disabled={!isEditable || !currentLlaveId} onClick={() => onSaveCircuitNote(noteDraft.trim())}>
               <i className="fa-solid fa-floppy-disk"></i> Guardar nota del circuito
             </button>
           </div>
@@ -383,7 +653,7 @@ export default function Sidebar({
             <label>Clasificación de cable por tramos:</label>
             <button 
               className={`btn ${isSegmentSelectionMode ? 'btn-active-mode' : 'btn-orange'}`} 
-              disabled={!currentLlaveId} 
+              disabled={!isEditable || !currentLlaveId}
               onClick={() => {
                 if (editingCableGroupId) {
                   setEditingCableGroupId(null);
@@ -426,24 +696,26 @@ export default function Sidebar({
                 <input 
                   className="input-control" 
                   value={cableCalibre} 
+                  disabled={!isEditable}
                   onChange={(e) => setCableCalibre(e.target.value)} 
                   placeholder="Calibre (ej. 70 mm²)" 
                 />
                 <input 
                   className="input-control" 
                   value={cableName} 
+                  disabled={!isEditable}
                   onChange={(e) => setCableName(e.target.value)} 
                   placeholder="Nombre opcional del grupo (ej. Troncal principal)" 
                 />
-                <input className="input-control" value={cableNote} onChange={(e) => setCableNote(e.target.value)} placeholder="Nota o anotación (ej. Rama 1)" />
+                <input className="input-control" value={cableNote} disabled={!isEditable} onChange={(e) => setCableNote(e.target.value)} placeholder="Nota o anotación (ej. Rama 1)" />
                 <div className="cable-color-picker" aria-label="Color de la rama">
-                  {CABLE_COLORS.map(color => <button key={color} type="button" className={cableColor === color ? 'active' : ''} style={{ backgroundColor: color }} onClick={() => setCableColor(color)} title={`Usar color ${color}`}><i className="fa-solid fa-check"></i></button>)}
+                  {CABLE_COLORS.map(color => <button key={color} type="button" disabled={!isEditable} className={cableColor === color ? 'active' : ''} style={{ backgroundColor: color }} onClick={() => setCableColor(color)} title={`Usar color ${color}`}><i className="fa-solid fa-check"></i></button>)}
                 </div>
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <button 
                     className={`btn ${editingCableGroupId ? 'btn-orange' : 'btn-green'}`} 
                     style={{ flex: 1 }} 
-                    disabled={!cableCalibre.trim() || selectedLineCount === 0} 
+                    disabled={!isEditable || !cableCalibre.trim() || selectedLineCount === 0}
                     onClick={() => {
                       onSaveCableGroup({
                         id: editingCableGroupId,
@@ -505,6 +777,7 @@ export default function Sidebar({
                   </span>
                   <button 
                     className="btn btn-outline" 
+                    disabled={!isEditable}
                     style={{ width: 'auto', padding: '3px 6px', color: 'var(--accent-cyan)' }} 
                     onClick={async () => {
                       if (onStartEditCableGroup) {
@@ -524,6 +797,7 @@ export default function Sidebar({
                   </button>
                   <button 
                     className="btn btn-outline" 
+                    disabled={!isEditable}
                     style={{ width: 'auto', padding: '3px 6px', color: '#ff1744' }} 
                     onClick={() => {
                       if (editingCableGroupId === group.id) {
@@ -553,6 +827,7 @@ export default function Sidebar({
             className={`btn ${isAddPointMode ? 'btn-active-mode' : 'btn-cyan'}`} 
             style={{ marginBottom: '8px' }}
             onClick={() => setIsAddPointMode(!isAddPointMode)}
+            disabled={!isEditable}
           >
             <i className={`fa-solid ${isAddPointMode ? 'fa-crosshairs' : 'fa-plus-node'}`}></i> 
             {isAddPointMode ? ' 📍 Haz Clic en el Mapa para Marcar Punto' : ' 📍 Marcar Punto de Falla Reparada'}
@@ -561,12 +836,14 @@ export default function Sidebar({
           <div className="points-table-container">
             <FaultTable 
               points={filteredFaultPoints} 
-              showActions={true}
+              faultAssignments={analysisFaultAssignments}
+              showActions={isEditable}
               onEdit={onEditPoint}
               onDelete={onDeletePoint}
+              deletingPointId={deletingPointId}
               onRelocate={onRelocatePoint}
               onRowClick={onFlyToPoint}
-              onFullViewChange={onFaultTableExpanded}
+              onOverlayChange={reportFaultTableOverlay}
             />
           </div>
         </div>

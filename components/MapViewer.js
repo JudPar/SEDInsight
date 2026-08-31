@@ -3,7 +3,26 @@
 import { useState, useEffect, useRef, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react';
 import { fixCoord, getWeightForZoom } from '@/lib/coordUtils';
 import { TILE_LAYERS, MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, FAULT_CAUSES, DEFAULT_CAUSE_COLOR, getCauseCategory } from '@/lib/constants';
+import { getSpiderfyPositions, groupOverlappingPoints } from '@/lib/overlappingMarkers';
+import { safeExternalImageSource, safeExternalNavigationUrl } from '@/lib/externalAssetSafety';
 
+const ANALYSIS_SELECTION_MAX_ZOOM = 19;
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  })[character]);
+}
+
+function safeMarkerColor(value, fallback) {
+  return /^#[0-9a-f]{3,8}$/i.test(String(value || '')) ? String(value) : fallback;
+}
+
+function getFaultIdentity(point, fallbackIndex = '') {
+  if (point?.id !== null && point?.id !== undefined) return `id:${point.id}`;
+  if (point?.originalIndex !== null && point?.originalIndex !== undefined) return `index:${point.originalIndex}`;
+  return `ticket:${point?.ticket || ''}:number:${point?.number || fallbackIndex}`;
+}
 
 const MapViewer = forwardRef(({
   currentTheme,
@@ -16,10 +35,14 @@ const MapViewer = forwardRef(({
   isAddPointMode,
   isRelocating,
   isPresentationMode,
+  isEditable = true,
   circuitNote,
   cableGroups = [],
   isSegmentSelectionMode,
   selectedLineIds = [],
+  selectedAnalysisSegmentId = null,
+  selectedAnalysisSegmentEdges = [],
+  hasSelectedAnalysisSegment = false,
   onMapClick,
   onSedDragEnd,
   onPointClick,
@@ -33,9 +56,16 @@ const MapViewer = forwardRef(({
   const darkTileLayerRef = useRef(null);
   const networkLayerGroupRef = useRef(null);
   const pointsLayerGroupRef = useRef(null);
+  const spiderLayerGroupRef = useRef(null);
   const sedMarkerRef = useRef(null);
   const pointMarkersRef = useRef([]);
+  const overlapGroupsRef = useRef(new Map());
+  const activeSpiderGroupRef = useRef(null);
+  const clearSpiderfyRef = useRef(() => {});
+  const openSpiderfyRef = useRef(() => {});
+  const focusRequestRef = useRef(0);
   const fittedCircuitRef = useRef(null);
+  const fittedAnalysisSegmentRef = useRef(null);
   const [sedsMasterDB, setSedsMasterDB] = useState({});
   const [mapViewport, setMapViewport] = useState({ bounds: null, zoom: MAP_DEFAULT_ZOOM });
   const [showLegend, setShowLegend] = useState(true);
@@ -65,11 +95,14 @@ const MapViewer = forwardRef(({
   // Guardamos L en una ref para acceso posterior
   const LRef = useRef(null);
 
-  const focusFailure = useCallback((coords, preferredZoom = 19) => {
+  const focusFailure = useCallback((pointOrCoords, preferredZoom = 19) => {
     const map = mapInstanceRef.current;
-    if (!map || !coords) return;
+    if (!map || !pointOrCoords) return;
 
+    const point = !Array.isArray(pointOrCoords) && pointOrCoords.coords ? pointOrCoords : null;
+    const coords = point?.coords || pointOrCoords;
     const target = Array.isArray(coords[0]) ? coords[0] : coords;
+    const targetIdentity = point ? getFaultIdentity(point) : null;
     const targetZoom = Math.max(map.getZoom(), Math.min(preferredZoom, MAP_MAX_ZOOM));
     const mapRect = map.getContainer().getBoundingClientRect();
     const sidebar = document.querySelector('#sidebar.sidebar:not(.hidden)');
@@ -78,13 +111,35 @@ const MapViewer = forwardRef(({
       ? Math.max(0, Math.min(mapRect.right, sidebarRect.right) - Math.max(mapRect.left, sidebarRect.left))
       : 0;
 
+    const requestId = focusRequestRef.current + 1;
+    focusRequestRef.current = requestId;
+    let flyHandled = false;
+
+    const revealMarker = () => {
+      if (focusRequestRef.current !== requestId) return;
+      const markerItem = pointMarkersRef.current.find(item => (
+        targetIdentity
+          ? item.pointIdentity === targetIdentity
+          : item.coords[0] === target[0] && item.coords[1] === target[1]
+      ));
+      if (markerItem?.groupId) openSpiderfyRef.current(markerItem.groupId, markerItem.key);
+      else markerItem?.marker?.openPopup();
+    };
+
+    const afterFly = () => {
+      if (flyHandled || focusRequestRef.current !== requestId) return;
+      flyHandled = true;
+      if (sidebarOverlap > 0) {
+        map.once('moveend', () => window.setTimeout(revealMarker, 50));
+        map.panBy([-sidebarOverlap / 2, 0], { animate: true, duration: 0.35 });
+      } else {
+        window.setTimeout(revealMarker, 50);
+      }
+    };
+
+    map.once('moveend', afterFly);
     map.flyTo(target, targetZoom, { duration: 1.1 });
-    window.setTimeout(() => {
-      // On desktop the map already excludes the sidebar. On overlay layouts, shift by its measured overlap.
-      if (sidebarOverlap > 0) map.panBy([-sidebarOverlap / 2, 0], { animate: true, duration: 0.35 });
-      const marker = pointMarkersRef.current.find(item => item.coords[0] === target[0] && item.coords[1] === target[1]);
-      marker?.marker.openPopup();
-    }, 700);
+    window.setTimeout(afterFly, 1400);
   }, []);
 
   useImperativeHandle(ref, () => ({
@@ -166,11 +221,15 @@ const MapViewer = forwardRef(({
     // Grupos de capas
     networkLayerGroupRef.current = L.layerGroup().addTo(map);
     pointsLayerGroupRef.current = L.layerGroup().addTo(map);
+    spiderLayerGroupRef.current = L.layerGroup().addTo(map);
 
     // Eventos del mapa
     map.on('click', (e) => {
+      clearSpiderfyRef.current();
       if (onMapClickRef.current) onMapClickRef.current(e.latlng);
     });
+
+    map.on('zoomstart', () => clearSpiderfyRef.current());
 
     const updateViewport = () => {
       const zoom = map.getZoom();
@@ -236,6 +295,7 @@ const MapViewer = forwardRef(({
       const lineColor = currentTheme === 'dark' ? '#00e5ff' : '#0077c2';
       const zoom = mapInstanceRef.current.getZoom();
       const weight = getWeightForZoom(zoom);
+      const analysisSegmentActive = hasSelectedAnalysisSegment && selectedAnalysisSegmentEdges.length > 0;
 
       llaveData.lines.forEach((line, index) => {
         if (line.coords && line.coords.length > 0) {
@@ -247,7 +307,7 @@ const MapViewer = forwardRef(({
           const polyline = L.polyline(fixedCoords, {
             color: isSelected ? '#ffca28' : (cableGroup?.color || lineColor),
             weight: isSelected ? weight + 3 : (cableGroup ? weight + 1.5 : weight),
-            opacity: 0.9
+            opacity: isSelected ? 1 : (analysisSegmentActive ? 0.2 : 0.9)
           }).addTo(networkGroup);
 
           if (isSegmentSelectionMode) {
@@ -260,9 +320,9 @@ const MapViewer = forwardRef(({
           if (line.id || line.length) {
             polyline.bindTooltip(`
               <div style="font-size:11px;">
-                <b>Circuito:</b> ${llaveData.name || 'Llave'}<br>
-                <b>Longitud:</b> ${line.length || 0} m<br>
-                <b>ID Tramo:</b> ${line.id || 'N/A'}
+                <b>Circuito:</b> ${escapeHtml(llaveData.name || 'Llave')}<br>
+                <b>Longitud:</b> ${escapeHtml(line.length || 0)} m<br>
+                <b>ID Tramo:</b> ${escapeHtml(line.id || 'N/A')}
               </div>
             `, { sticky: true });
           }
@@ -270,6 +330,30 @@ const MapViewer = forwardRef(({
           fixedCoords.forEach(c => bounds.push(c));
         }
       });
+
+      if (analysisSegmentActive) {
+        selectedAnalysisSegmentEdges.forEach((edge) => {
+          if (!Array.isArray(edge?.coords) || edge.coords.length !== 2) return;
+          L.polyline(edge.coords.map(coord => fixCoord(coord)), {
+            color: '#d81b60',
+            weight: weight + 3,
+            opacity: 1,
+            interactive: false
+          }).addTo(networkGroup);
+        });
+
+        llaveData.lines.forEach((line, index) => {
+          const lineId = String(line.id ?? index);
+          if (!selectedLineIds.includes(lineId) || !Array.isArray(line.coords)) return;
+          L.polyline(line.coords.map(coord => fixCoord(coord)), {
+            color: '#ffca28',
+            weight: weight + 5,
+            opacity: 1,
+            dashArray: '7, 5',
+            interactive: false
+          }).addTo(networkGroup);
+        });
+      }
     }
 
     let masterSed = null;
@@ -293,38 +377,38 @@ const MapViewer = forwardRef(({
     if (fixedSedCoord && fixedSedCoord[0] !== 0 && fixedSedCoord[1] !== 0) {
       const sedIcon = L.divIcon({
         className: 'sed-substation-wrapper',
-        html: `<div class="sed-substation-icon ${isPresentationMode ? 'is-readonly' : ''}" title="SED ${sedId}${isPresentationMode ? '' : ' (Arrastra para mover la SED)'}">⚡</div>`,
+        html: `<div class="sed-substation-icon ${isPresentationMode || !isEditable ? 'is-readonly' : ''}" title="SED ${escapeHtml(sedId)}${isPresentationMode || !isEditable ? '' : ' (Arrastra para mover la SED)'}">⚡</div>`,
         iconSize: [22, 22],
         iconAnchor: [11, 11]
       });
 
       sedMarkerRef.current = L.marker(fixedSedCoord, {
         icon: sedIcon,
-        draggable: !isPresentationMode,
+        draggable: !isPresentationMode && isEditable,
         zIndexOffset: 2000
       }).addTo(networkGroup);
 
       if (sedId) {
         let tooltipContent = `<div style="font-size:11px; max-width:240px;">
-          <b style="color:#ffab00;">⚡ SUBESTACIÓN (SED ${sedId})</b>`;
+          <b style="color:#ffab00;">⚡ SUBESTACIÓN (SED ${escapeHtml(sedId)})</b>`;
 
         if (masterSed) {
           tooltipContent += `<div style="margin-top:4px; border-top:1px dashed #bbb; padding-top:4px; font-size:10.5px; line-height:1.4;">
-            ${masterSed.cli !== undefined ? `<div>👥 <b>Clientes BT:</b> ${masterSed.cli.toLocaleString()}</div>` : ''}
-            ${masterSed.kva !== undefined ? `<div>⚡ <b>Potencia:</b> ${masterSed.kva} KVA (${masterSed.kv || 10} kV)</div>` : ''}
-            ${masterSed.tipo_const ? `<div>🏗️ <b>Construcción:</b> ${masterSed.tipo_const}</div>` : ''}
-            ${masterSed.dir ? `<div>📍 <b>Dirección:</b> ${masterSed.dir} (${masterSed.dist || ''})</div>` : ''}
-            ${masterSed.uo ? `<div>🏢 <b>UO:</b> ${masterSed.uo}</div>` : ''}
+            ${masterSed.cli !== undefined ? `<div>👥 <b>Clientes BT:</b> ${escapeHtml(masterSed.cli.toLocaleString())}</div>` : ''}
+            ${masterSed.kva !== undefined ? `<div>⚡ <b>Potencia:</b> ${escapeHtml(masterSed.kva)} KVA (${escapeHtml(masterSed.kv || 10)} kV)</div>` : ''}
+            ${masterSed.tipo_const ? `<div>🏗️ <b>Construcción:</b> ${escapeHtml(masterSed.tipo_const)}</div>` : ''}
+            ${masterSed.dir ? `<div>📍 <b>Dirección:</b> ${escapeHtml(masterSed.dir)} (${escapeHtml(masterSed.dist || '')})</div>` : ''}
+            ${masterSed.uo ? `<div>🏢 <b>UO:</b> ${escapeHtml(masterSed.uo)}</div>` : ''}
           </div>`;
         }
 
-        if (!isPresentationMode) tooltipContent += `<div style="margin-top:4px; font-size:9.5px; color:#666;">Arrastra este marcador para ajustar su posición</div>`;
+        if (!isPresentationMode && isEditable) tooltipContent += `<div style="margin-top:4px; font-size:9.5px; color:#666;">Arrastra este marcador para ajustar su posición</div>`;
         tooltipContent += '</div>';
 
         sedMarkerRef.current.bindTooltip(tooltipContent, { sticky: true });
       }
 
-      if (!isPresentationMode) sedMarkerRef.current.on('dragend', (e) => {
+      if (!isPresentationMode && isEditable) sedMarkerRef.current.on('dragend', (e) => {
         const marker = e.target;
         const position = marker.getLatLng();
         if (onSedDragEnd) {
@@ -341,49 +425,164 @@ const MapViewer = forwardRef(({
       mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 18, animate: true });
       fittedCircuitRef.current = circuitId;
     }
-  }, [llaveData, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, onLineClick, isPresentationMode, circuitId]);
+  }, [llaveData, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, selectedAnalysisSegmentEdges, hasSelectedAnalysisSegment, onLineClick, isPresentationMode, isEditable, circuitId]);
 
-  // Dibujar puntos de falla
+  useEffect(() => {
+    if (!selectedAnalysisSegmentId) {
+      fittedAnalysisSegmentRef.current = null;
+      return;
+    }
+    if (fittedAnalysisSegmentRef.current === selectedAnalysisSegmentId) return;
+
+    const L = LRef.current;
+    const map = mapInstanceRef.current;
+    if (!L || !map) return;
+    const coordinates = selectedAnalysisSegmentEdges.flatMap(edge => (
+      Array.isArray(edge?.coords) ? edge.coords.map(coord => fixCoord(coord)) : []
+    )).filter(coord => Array.isArray(coord) && coord.length >= 2 && coord.every(Number.isFinite));
+    if (!coordinates.length) return;
+
+    const bounds = L.latLngBounds(coordinates);
+    if (!bounds.isValid()) return;
+    map.fitBounds(bounds, { padding: [65, 65], maxZoom: ANALYSIS_SELECTION_MAX_ZOOM, animate: true });
+    fittedAnalysisSegmentRef.current = selectedAnalysisSegmentId;
+  }, [selectedAnalysisSegmentId, selectedAnalysisSegmentEdges]);
+
+  // Dibujar puntos de falla y agrupar únicamente los que se pisan visualmente.
   useEffect(() => {
     const L = LRef.current;
     if (!L || !mapInstanceRef.current) return;
-    
+
+    const map = mapInstanceRef.current;
     const pointsGroup = pointsLayerGroupRef.current;
+    const spiderGroup = spiderLayerGroupRef.current;
+    clearSpiderfyRef.current();
     pointsGroup.clearLayers();
+    spiderGroup.clearLayers();
     pointMarkersRef.current = [];
+    overlapGroupsRef.current = new Map();
+    activeSpiderGroupRef.current = null;
 
-    if (faultPoints && faultPoints.length > 0) {
-      const mapBounds = mapViewport.bounds || (mapInstanceRef.current ? mapInstanceRef.current.getBounds() : null);
-      const currentZoom = mapViewport.zoom || (mapInstanceRef.current ? mapInstanceRef.current.getZoom() : MAP_DEFAULT_ZOOM);
+    const createPointIcon = (item) => L.divIcon({
+      className: 'fault-point-wrapper',
+      html: `<div class="fault-marker" style="background-color: ${safeMarkerColor(item.markerBg, '#d32f2f')}; color: ${safeMarkerColor(item.markerTextColor, '#ffffff')}; border-radius: 50%; width: 26px; height: 26px; display: flex; justify-content: center; align-items: center; font-weight: bold; font-size: 12px; border: 2px solid white; box-shadow: 0 0 6px rgba(0,0,0,0.6);">${escapeHtml(item.displayNum)}</div>`,
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
+    });
 
-      // Si no hay SED seleccionada y el zoom está muy alejado (< 8), ocultar para no sobrecargar
-      if (!sedId && currentZoom < 8 && faultPoints.length > 10) {
+    const buildPopupContent = (item) => {
+      const { pt, displayNum, subIdx, coordsCount, causeCat } = item;
+      const subInfo = coordsCount > 1 ? ` (Punto ${subIdx + 1} de ${coordsCount})` : '';
+      const linkCroquis = safeExternalNavigationUrl(pt.linkCroquis || pt.link_croquis || pt.croquis || '');
+      const croquisHtml = linkCroquis
+        ? `<div style="margin-top: 8px;">
+            <a href="${escapeHtml(linkCroquis)}" target="_blank" rel="noopener noreferrer" style="display: block; width: 100%; text-align: center; padding: 6px 8px; background: #00897b; color: white; border-radius: 4px; font-weight: bold; text-decoration: none; box-sizing: border-box;">
+              🗺️ Abrir Link del Croquis (PDF) ↗
+            </a>
+           </div>`
+        : '<p style="margin: 4px 0; color: #888; font-style: italic;">Sin Link de Croquis</p>';
+      const notaHtml = pt.nota ? `<p style="margin: 3px 0;"><b>📝 Nota Específica:</b> ${escapeHtml(pt.nota)}</p>` : '';
+      const horaHtml = pt.horaInicio ? `<p style="margin: 3px 0;"><b>🕒 Hora de Inicio:</b> ${escapeHtml(pt.horaInicio)}</p>` : '';
+      const causaBadge = `<span style="display: inline-block; background-color: ${safeMarkerColor(causeCat.color, '#607d8b')}; color: ${safeMarkerColor(causeCat.textColor, '#ffffff')}; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px; margin-left: 4px;">${escapeHtml(causeCat.label)}</span>`;
+      const causaHtml = `<p style="margin: 3px 0;"><b>💡 Causa:</b> ${escapeHtml(pt.causa || causeCat.label)} ${causaBadge}</p>`;
+      const safePhotos = (pt.fotos || []).map(photo => ({
+        name: escapeHtml(photo?.name || 'Foto'),
+        source: safeExternalImageSource(photo?.url),
+        href: safeExternalNavigationUrl(photo?.url)
+      })).filter(photo => photo.source);
+      const fotosHtml = safePhotos.length > 0
+        ? `<div style="display:flex; gap:4px; margin-top:6px; overflow-x:auto;">
+            ${safePhotos.map(photo => photo.href
+              ? `<a href="${escapeHtml(photo.href)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(photo.source)}" style="width:45px; height:45px; object-fit:cover; border-radius:4px; border:1px solid #0077c2;" title="${photo.name}"></a>`
+              : `<img src="${escapeHtml(photo.source)}" style="width:45px; height:45px; object-fit:cover; border-radius:4px; border:1px solid #0077c2;" title="${photo.name}">`).join('')}
+           </div>`
+        : '';
+
+      return `
+        <div style="min-width: 220px; max-width: 280px; font-size: 11px; line-height: 1.4;">
+          <h4 style="margin: 0 0 6px 0; border-bottom: 1px solid #ccc; padding-bottom: 4px; color:#d32f2f;">📍 Falla #${escapeHtml(displayNum)}${escapeHtml(subInfo)}</h4>
+          <p style="margin: 3px 0;"><b>Ticket:</b> ${escapeHtml(pt.ticket || '-')}</p>
+          ${horaHtml}
+          <p style="margin: 3px 0;"><b>Falla Real:</b> ${escapeHtml(pt.falla || pt.fallaReal || '-')}</p>
+          ${causaHtml}
+          <p style="margin: 3px 0;"><b>Suministro:</b> ${escapeHtml(pt.suministro || '-')}</p>
+          ${notaHtml}
+          ${croquisHtml}
+          ${fotosHtml}
+          ${!isPresentationMode && isEditable ? `<button class="edit-btn-popup" data-id="${escapeHtml(pt.originalIndex)}" style="margin-top: 8px; width: 100%; padding: 5px; background: #0288d1; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;">📝 Editar Datos / Fotos</button>` : ''}
+        </div>
+      `;
+    };
+
+    const createIndividualMarker = (item, markerCoord, targetLayer) => {
+      const marker = L.marker(markerCoord, { icon: createPointIcon(item) }).addTo(targetLayer);
+      marker.bindPopup(buildPopupContent(item));
+      marker.on('click', () => {
+        if (!isPresentationMode && isEditable && onPointClick) onPointClick(item.pt.originalIndex);
+      });
+      return marker;
+    };
+
+    const clearSpiderfy = () => {
+      spiderGroup.clearLayers();
+      activeSpiderGroupRef.current = null;
+    };
+
+    const openSpiderfy = (groupId, preferredItemKey = null) => {
+      const group = overlapGroupsRef.current.get(groupId);
+      if (!group) return;
+      if (activeSpiderGroupRef.current === groupId && !preferredItemKey) {
+        clearSpiderfy();
         return;
       }
 
-      faultPoints.forEach((pt) => {
+      clearSpiderfy();
+      activeSpiderGroupRef.current = groupId;
+      const centerPoint = map.latLngToLayerPoint(group.centerLatLng);
+      const positions = getSpiderfyPositions(centerPoint, group.items.length);
+      let preferredMarker = null;
+
+      group.items.forEach((item, index) => {
+        const visualLatLng = map.layerPointToLatLng(positions[index]);
+        L.polyline([item.coords, visualLatLng], {
+          color: currentTheme === 'dark' ? '#80deea' : '#546e7a',
+          weight: 1.25,
+          opacity: 0.8,
+          interactive: false,
+          className: 'fault-spider-leg'
+        }).addTo(spiderGroup);
+        const marker = createIndividualMarker(item, visualLatLng, spiderGroup);
+        marker.setZIndexOffset(3000 + index);
+        if (item.key === preferredItemKey) preferredMarker = marker;
+      });
+
+      if (preferredMarker) window.setTimeout(() => preferredMarker.openPopup(), 0);
+    };
+
+    clearSpiderfyRef.current = clearSpiderfy;
+    openSpiderfyRef.current = openSpiderfy;
+
+    if (faultPoints && faultPoints.length > 0) {
+      const mapBounds = mapViewport.bounds || map.getBounds();
+      const currentZoom = mapViewport.zoom || map.getZoom() || MAP_DEFAULT_ZOOM;
+
+      if (!sedId && currentZoom < 8 && faultPoints.length > 10) return;
+
+      const projectedItems = [];
+      faultPoints.forEach((pt, pointIndex) => {
         if (!pt.coords) return;
-        
         const displayNum = pt.localNumber || pt.number || '';
-        
         let coordsList = [];
         if (Array.isArray(pt.coords)) {
-          if (Array.isArray(pt.coords[0])) {
-            coordsList = pt.coords.map(c => fixCoord(c));
-          } else {
-            coordsList = [fixCoord(pt.coords)];
-          }
+          coordsList = Array.isArray(pt.coords[0]) ? pt.coords.map(c => fixCoord(c)) : [fixCoord(pt.coords)];
         }
-
         if (coordsList.length === 0) return;
 
-        // BBOX Filtering: verificar si al menos 1 coordenada está dentro de la pantalla visible
         if (mapBounds && !sedId && faultPoints.length > 15) {
           const isVisible = coordsList.some(c => mapBounds.contains(L.latLng(c[0], c[1])));
           if (!isVisible) return;
         }
 
-        // Si la falla tiene múltiples puntos de arreglo, trazar línea punteada de conexión
         if (coordsList.length > 1) {
           L.polyline(coordsList, {
             color: '#f44336',
@@ -395,68 +594,53 @@ const MapViewer = forwardRef(({
 
         coordsList.forEach((coord, subIdx) => {
           const causeCat = getCauseCategory(pt.causa);
-          const markerBg = causeCat.color;
-          const markerTextColor = causeCat.textColor || '#ffffff';
-
-          const pointIcon = L.divIcon({
-            className: 'fault-point-wrapper',
-            html: `<div class="fault-marker" style="background-color: ${markerBg}; color: ${markerTextColor}; border-radius: 50%; width: 26px; height: 26px; display: flex; justify-content: center; align-items: center; font-weight: bold; font-size: 12px; border: 2px solid white; box-shadow: 0 0 6px rgba(0,0,0,0.6);">${displayNum}</div>`,
-            iconSize: [26, 26],
-            iconAnchor: [13, 13]
-          });
-
-          const marker = L.marker(coord, { icon: pointIcon }).addTo(pointsGroup);
-          pointMarkersRef.current.push({ coords: coord, marker });
-          
-          const subInfo = coordsList.length > 1 ? ` (Punto ${subIdx + 1} de ${coordsList.length})` : '';
-
-          const linkCroquis = pt.linkCroquis || pt.link_croquis || pt.croquis || '';
-
-          const croquisHtml = linkCroquis
-            ? `<div style="margin-top: 8px;">
-                <a href="${linkCroquis}" target="_blank" rel="noopener noreferrer" style="display: block; width: 100%; text-align: center; padding: 6px 8px; background: #00897b; color: white; border-radius: 4px; font-weight: bold; text-decoration: none; box-sizing: border-box;">
-                  🗺️ Abrir Link del Croquis (PDF) ↗
-                </a>
-               </div>`
-            : '<p style="margin: 4px 0; color: #888; font-style: italic;">Sin Link de Croquis</p>';
-
-          const notaHtml = pt.nota ? `<p style="margin: 3px 0;"><b>📝 Nota Específica:</b> ${pt.nota}</p>` : '';
-          const horaHtml = pt.horaInicio ? `<p style="margin: 3px 0;"><b>🕒 Hora de Inicio:</b> ${pt.horaInicio}</p>` : '';
-          const causaBadge = `<span style="display: inline-block; background-color: ${causeCat.color}; color: ${causeCat.textColor}; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px; margin-left: 4px;">${causeCat.label}</span>`;
-          const causaHtml = `<p style="margin: 3px 0;"><b>💡 Causa:</b> ${pt.causa || causeCat.label} ${causaBadge}</p>`;
-
-          const fotosHtml = (pt.fotos && pt.fotos.length > 0)
-            ? `<div style="display:flex; gap:4px; margin-top:6px; overflow-x:auto;">
-                ${pt.fotos.map(f => `<a href="${f.url}" target="_blank"><img src="${f.url}" style="width:45px; height:45px; object-fit:cover; border-radius:4px; border:1px solid #0077c2;" title="${f.name}"></a>`).join('')}
-               </div>`
-            : '';
-
-          const popupContent = `
-            <div style="min-width: 220px; max-width: 280px; font-size: 11px; line-height: 1.4;">
-              <h4 style="margin: 0 0 6px 0; border-bottom: 1px solid #ccc; padding-bottom: 4px; color:#d32f2f;">📍 Falla #${displayNum}${subInfo}</h4>
-              <p style="margin: 3px 0;"><b>Ticket:</b> ${pt.ticket || '-'}</p>
-              ${horaHtml}
-              <p style="margin: 3px 0;"><b>Falla Real:</b> ${pt.falla || pt.fallaReal || '-'}</p>
-              ${causaHtml}
-              <p style="margin: 3px 0;"><b>Suministro:</b> ${pt.suministro || '-'}</p>
-              ${notaHtml}
-              ${croquisHtml}
-              ${fotosHtml}
-              ${!isPresentationMode ? `<button class="edit-btn-popup" data-id="${pt.originalIndex}" style="margin-top: 8px; width: 100%; padding: 5px; background: #0288d1; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight:bold;">📝 Editar Datos / Fotos</button>` : ''}
-            </div>
-          `;
-          
-          marker.bindPopup(popupContent);
-          
-          marker.on('click', () => {
-            if (!isPresentationMode && onPointClick) {
-              onPointClick(pt.originalIndex);
-            }
+          const pixel = map.latLngToLayerPoint(coord);
+          const pointIdentity = getFaultIdentity(pt, pointIndex);
+          projectedItems.push({
+            key: `${pointIdentity}:point:${subIdx}`,
+            pointIdentity,
+            pt,
+            coords: coord,
+            subIdx,
+            coordsCount: coordsList.length,
+            displayNum,
+            causeCat,
+            markerBg: causeCat.color,
+            markerTextColor: causeCat.textColor || '#ffffff',
+            x: pixel.x,
+            y: pixel.y
           });
         });
       });
+
+      groupOverlappingPoints(projectedItems).forEach((group) => {
+        const faultCount = new Set(group.items.map(item => item.pointIdentity)).size;
+        if (group.items.length === 1 || faultCount === 1) {
+          group.items.forEach((item) => {
+            const marker = createIndividualMarker(item, item.coords, pointsGroup);
+            pointMarkersRef.current.push({ ...item, marker, groupId: null });
+          });
+          return;
+        }
+
+        const groupId = group.items.map(item => item.key).sort().join('|');
+        const centerLatLng = map.layerPointToLatLng(group.center);
+        overlapGroupsRef.current.set(groupId, { ...group, centerLatLng });
+        group.items.forEach(item => pointMarkersRef.current.push({ ...item, marker: null, groupId }));
+
+        const groupIcon = L.divIcon({
+          className: 'fault-overlap-wrapper',
+          html: `<div class="fault-overlap-marker" title="${faultCount} fallas superpuestas">${faultCount}</div>`,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16]
+        });
+        const groupMarker = L.marker(centerLatLng, { icon: groupIcon, zIndexOffset: 2500 }).addTo(pointsGroup);
+        groupMarker.on('click', () => openSpiderfy(groupId));
+      });
     }
-  }, [faultPoints, isPresentationMode, onPointClick, mapViewport, sedId]);
+
+    return () => clearSpiderfy();
+  }, [faultPoints, isPresentationMode, isEditable, onPointClick, mapViewport, sedId, currentTheme]);
 
   // Manejar modo de añadir punto / reubicar
   useEffect(() => {

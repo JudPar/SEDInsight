@@ -5,7 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test:geolocation": "node tests/faultGeolocation.test.mjs",
+    "test:markers": "node tests/overlappingMarkers.test.mjs",
+    "test:project": "node tests/projectArchitecture.test.mjs",
+    "test:project-import": "node tests/projectImport.test.mjs",
+    "test:project-lifecycle": "node tests/projectLifecycle.test.mjs",
+    "test:project-fidelity": "node tests/projectFidelity.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.0",

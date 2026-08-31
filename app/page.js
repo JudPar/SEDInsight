@@ -8,16 +8,88 @@ import FaultForm from '@/components/FaultForm';
 import PresentationHUD from '@/components/PresentationHUD';
 import PresentationTablePanel from '@/components/PresentationTablePanel';
 import TicketConflictModal from '@/components/TicketConflictModal';
+import DataSourceBadge from '@/components/DataSourceBadge';
 import { sortSedIds } from '@/components/SearchableSedSelect';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
-import { getCachedSeds, setCachedSeds } from '@/lib/dbCache';
+import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getCachedSeds, getExpectedLocalProject, invalidateSedsCache, markLocalProjectExpected, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { isSedMatch, isLlaveMatch } from '@/lib/sedUtils';
-import { CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
+import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
+import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
+import { GEOPLUZ_PROJECT_FORMAT, parseProjectJson } from '@/lib/projectFormat';
+import { createProjectDocument, projectToInternalModel } from '@/lib/projectMappers';
+import { validateProject } from '@/lib/projectValidation';
+import { createSupabaseProjectRepository, getMainDatabaseState } from '@/lib/projectImport';
+import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging, finalizeStagedProject, stageProject } from '@/lib/projectStaging';
+import {
+  COORD_SOURCE,
+  coordinatePairsEqual,
+  formatGeoreferenceSummary,
+  georeferenceFaultBatch,
+  getCoordinatePair,
+  isValidCoordinatePair,
+  markCoordinatesManual,
+  normalizeSuministro
+} from '@/lib/faultGeolocation';
 
 // MapViewer importado dinámicamente para evitar SSR
 const MapViewer = dynamic(() => import('@/components/MapViewer'), { ssr: false });
+
+function mapSupabaseRowsToProjectState(sedsData = [], llavesData = [], fallasData = []) {
+  const database = {};
+  sedsData.forEach(sed => {
+    database[sed.id] = {
+      id: sed.id,
+      name: sed.name,
+      sedCoord: sed.sed_coord,
+      createdAt: sed.created_at || null,
+      llaves: {}
+    };
+  });
+  llavesData.forEach(llave => {
+    if (database[llave.sed_id]) database[llave.sed_id].llaves[llave.llave_code] = hydrateLlave(llave);
+  });
+  const faults = fallasData.map((falla, index) => ({
+    id: falla.id,
+    number: index + 1,
+    coords: isValidCoordinatePair(falla) ? [falla.latitud, falla.longitud] : null,
+    ticket: falla.ticket || '',
+    horaInicio: falla.hora_inicio || '',
+    zona: falla.zona || '',
+    set: falla.set_alimentador ? falla.set_alimentador.split('/')[0]?.trim() : '',
+    alimentador: falla.set_alimentador ? falla.set_alimentador.split('/')[1]?.trim() : '',
+    setAlimentador: falla.set_alimentador || '',
+    nota: falla.nota || '',
+    odm: falla.odm || '',
+    suministro: falla.suministro || '',
+    sedLlave: falla.sed_llave || '',
+    sed: falla.sed_id || '',
+    llaveSistema: falla.llave_code || '',
+    llaveCampo: `${falla.llave_code || ''} (Campo)`,
+    falla: falla.falla_real || '',
+    causa: falla.causa || '',
+    linkCroquis: falla.link_croquis || '',
+    fotos: falla.fotos || [],
+    coordSource: falla.coord_source || null,
+    coordLookupSuministro: falla.coord_lookup_suministro || null,
+    createdAt: falla.created_at || null
+  }));
+  return { database, faults };
+}
+
+function downloadProjectFile(project) {
+  const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const safeName = String(project.project.name || 'geopluz-proyecto').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
+  link.href = url;
+  link.download = `${safeName || 'geopluz-proyecto'}.geopluz.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 export default function Page() {
   // Estado de Datos
@@ -41,35 +113,81 @@ export default function Page() {
   const [relocatingPointIndex, setRelocatingPointIndex] = useState(null);
   const [isSegmentSelectionMode, setIsSegmentSelectionMode] = useState(false);
   const [selectedLineIds, setSelectedLineIds] = useState([]);
-  const [isFaultTableExpanded, setIsFaultTableExpanded] = useState(false);
+  const [circuitPhase1Analysis, setCircuitPhase1Analysis] = useState(null);
+  const [selectedAnalysisSegmentId, setSelectedAnalysisSegmentId] = useState(null);
+  const [filterByAnalysisSegment, setFilterByAnalysisSegment] = useState(false);
+  const [deletingPointId, setDeletingPointId] = useState(null);
+  const [activeMajorOverlays, setActiveMajorOverlays] = useState(() => new Set());
+  const [dataSource, setDataSource] = useState({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
 
   // Estado del Formulario
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingPointIndex, setEditingPointIndex] = useState(null);
 
-  // El acceso a esta pantalla exige una sesión Supabase válida mediante AuthGate.
-  const isEditable = true;
+  // El acceso exige AuthGate; un proyecto local se mantiene deliberadamente en solo lectura.
+  const isEditable = dataSource.kind === 'SUPABASE';
   
   const mapRef = useRef(null);
 
+  const setMajorOverlayOpen = useCallback((overlayId, isOpen) => {
+    setActiveMajorOverlays(current => {
+      const alreadyOpen = current.has(overlayId);
+      if (alreadyOpen === isOpen) return current;
+      const next = new Set(current);
+      if (isOpen) next.add(overlayId);
+      else next.delete(overlayId);
+      return next;
+    });
+  }, []);
+
+  const isMajorOverlayOpen = activeMajorOverlays.size > 0;
+
   useEffect(() => {
-    loadData();
+    setMajorOverlayOpen('fault-form', isFormOpen);
+  }, [isFormOpen, setMajorOverlayOpen]);
+
+  useEffect(() => {
+    setMajorOverlayOpen('ticket-conflicts', isConflictModalOpen);
+  }, [isConflictModalOpen, setMajorOverlayOpen]);
+
+  useEffect(() => {
+    initializeData();
   }, []);
 
   useEffect(() => {
     document.body.classList.toggle('dark-theme', currentTheme === 'dark');
   }, [currentTheme]);
 
-  // Carga de Datos desde IndexedDB Caché / Supabase
-  async function loadData() {
-    // 1. Intentar cargar SEDS & Llaves desde caché IndexedDB primero para respuesta instantánea
-    try {
-      const cachedDb = await getCachedSeds();
-      if (cachedDb && Object.keys(cachedDb).length > 0) {
-        setLocalDatabase(cachedDb);
+  async function initializeData() {
+    const expectedLocalProject = getExpectedLocalProject();
+    const cachedLocalProject = await getActiveLocalProject();
+    if (cachedLocalProject) {
+      const validation = await validateProject(cachedLocalProject);
+      if (validation.valid) {
+        applyLocalProject(cachedLocalProject);
+        return;
       }
-    } catch (cErr) {
-      console.warn('Error leyendo caché IndexedDB:', cErr);
+      await clearActiveLocalProject();
+    }
+    if (expectedLocalProject) {
+      setDataSource({ kind: 'LOCAL_PROJECT', readOnly: true, projectId: expectedLocalProject.projectId, projectName: `${expectedLocalProject.projectName} (no disponible)` });
+      return;
+    }
+    await loadSupabaseData();
+  }
+
+  // Carga de Datos desde IndexedDB Caché / Supabase
+  async function loadSupabaseData({ skipCache = false } = {}) {
+    // 1. Intentar cargar SEDS & Llaves desde caché IndexedDB primero para respuesta instantánea
+    if (!skipCache) {
+      try {
+        const cachedDb = await getCachedSeds();
+        if (cachedDb && Object.keys(cachedDb).length > 0) {
+          setLocalDatabase(cachedDb);
+        }
+      } catch (cErr) {
+        console.warn('Error leyendo caché IndexedDB:', cErr);
+      }
     }
 
     if (!isSupabaseConfigured || !supabase) return;
@@ -85,6 +203,7 @@ export default function Page() {
             id: sed.id,
             name: sed.name,
             sedCoord: sed.sed_coord,
+            createdAt: sed.created_at || null,
             llaves: {}
           };
         });
@@ -101,35 +220,16 @@ export default function Page() {
         setCachedSeds(db);
         
         if (fallasData) {
-          // Deduplicar registros de Supabase por Ticket (manteniendo el más reciente o con ID más alto)
-          const uniqueMap = new Map();
-          fallasData.forEach(f => {
-            const key = f.ticket ? String(f.ticket).trim().toLowerCase() : null;
-            if (key) {
-              if (!uniqueMap.has(key)) {
-                uniqueMap.set(key, f);
-              } else {
-                const existing = uniqueMap.get(key);
-                // Conservar el registro con mayor información o ID más reciente
-                if ((!existing.latitud && f.latitud) || (f.id && (!existing.id || f.id > existing.id))) {
-                  uniqueMap.set(key, f);
-                }
-              }
-            } else {
-              uniqueMap.set(`id_${f.id}`, f);
-            }
-          });
-
-          const deduplicatedFallas = Array.from(uniqueMap.values());
-          const points = deduplicatedFallas.map((f, i) => ({
+          const points = fallasData.map((f, i) => ({
             id: f.id,
             number: i + 1,
-            coords: (f.latitud && f.longitud) ? [f.latitud, f.longitud] : null,
+            coords: isValidCoordinatePair(f) ? [f.latitud, f.longitud] : null,
             ticket: f.ticket || '',
             horaInicio: f.hora_inicio || '',
             zona: f.zona || '',
             set: f.set_alimentador ? f.set_alimentador.split('/')[0]?.trim() : '',
             alimentador: f.set_alimentador ? f.set_alimentador.split('/')[1]?.trim() : '',
+            setAlimentador: f.set_alimentador || '',
             nota: f.nota || '',
             odm: f.odm || '',
             suministro: f.suministro || '',
@@ -140,14 +240,197 @@ export default function Page() {
             falla: f.falla_real || '',
             causa: f.causa || '',
             linkCroquis: f.link_croquis || '',
-            fotos: f.fotos || []
+            fotos: f.fotos || [],
+            coordSource: f.coord_source || null,
+            coordLookupSuministro: f.coord_lookup_suministro || null,
+            createdAt: f.created_at || null
           }));
           setNumberedPointsList(points);
         }
+        setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
       }
     } catch (err) {
       console.log('Supabase no disponible, usando caché local:', err.message);
     }
+  }
+
+  function applyLocalProject(project) {
+    const model = projectToInternalModel(project);
+    setLocalDatabase(model.localDatabase);
+    setNumberedPointsList(model.numberedPointsList);
+    setDataSource({
+      kind: 'LOCAL_PROJECT',
+      readOnly: true,
+      projectId: project.project.id,
+      projectName: project.project.name,
+      sourceKind: project.project.source_kind
+    });
+    setIsAddPointMode(false);
+    setRelocatingPointIndex(null);
+    setIsSegmentSelectionMode(false);
+    setSelectedLineIds([]);
+    setEditingPointIndex(null);
+    setIsFormOpen(false);
+    markLocalProjectExpected(project);
+    const firstSed = Object.keys(model.localDatabase)[0] || '';
+    setCurrentSedId(firstSed);
+    setCurrentLlaveId(firstSed ? Object.keys(model.localDatabase[firstSed]?.llaves || {})[0] || '' : '');
+  }
+
+  async function handleOpenLocalProject(project) {
+    const validation = await validateProject(project);
+    if (!validation.valid) throw new Error('El proyecto dejó de ser válido antes de abrirse.');
+    const cached = await setActiveLocalProject(project);
+    applyLocalProject(project);
+    if (!cached) {
+      alert('El proyecto se abrió localmente, pero el navegador no permitió guardarlo para recargas o para /presentacion.');
+    }
+  }
+
+  async function handleGetActiveLocalProject() {
+    const cached = await getActiveLocalProject();
+    if (cached) return cached;
+    return createProjectDocument(localDatabase, numberedPointsList, {
+      projectId: dataSource.projectId,
+      projectName: dataSource.projectName,
+      sourceKind: dataSource.sourceKind || 'LOCAL_PROJECT'
+    });
+  }
+
+  async function handleCheckMainDatabase() {
+    if (!isSupabaseConfigured || !supabase) throw new Error('Supabase no está configurado para comprobar la Base Principal.');
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (error || !session) throw new Error('Tu sesión de Supabase no está disponible. Inicia sesión nuevamente.');
+    return getMainDatabaseState(createSupabaseProjectRepository(supabase));
+  }
+
+  async function handleCloseLocalProject() {
+    if (dataSource.kind !== 'LOCAL_PROJECT') return;
+    await clearActiveLocalProject();
+    clearExpectedLocalProject();
+    setLocalDatabase({});
+    setNumberedPointsList([]);
+    setCurrentSedId('');
+    setCurrentLlaveId('');
+    setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
+    await loadSupabaseData();
+  }
+
+  async function handleDownloadProject() {
+    try {
+      const project = await createProjectDocument(localDatabase, numberedPointsList, {
+        projectId: dataSource.projectId,
+        projectName: dataSource.projectName,
+        sourceKind: dataSource.sourceKind || dataSource.kind
+      });
+      downloadProjectFile(project);
+    } catch (error) {
+      alert(`No se pudo generar el proyecto: ${error.message}`);
+    }
+  }
+
+  async function requireLifecycleSession() {
+    if (!isSupabaseConfigured || !supabase) throw new Error('Supabase no está configurado.');
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (error || !session?.user?.id) throw new Error('Tu sesión de Supabase expiró. Inicia sesión nuevamente.');
+    return { session, repository: createSupabaseLifecycleRepository(supabase) };
+  }
+
+  async function handleDownloadMainProject() {
+    const { session } = await requireLifecycleSession();
+    if (!session) return;
+    const [sedsResult, llavesResult, fallasResult] = await Promise.all([
+      supabase.from('seds').select('*').range(0, 99999),
+      supabase.from('llaves').select('*').range(0, 99999),
+      supabase.from('fallas').select('*').range(0, 99999)
+    ]);
+    const error = sedsResult.error || llavesResult.error || fallasResult.error;
+    if (error) throw new Error('No se pudo obtener un snapshot completo de la Base Principal.');
+    const state = mapSupabaseRowsToProjectState(sedsResult.data, llavesResult.data, fallasResult.data);
+    const project = await createProjectDocument(state.database, state.faults, {
+      projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ', sourceKind: 'SUPABASE'
+    });
+    downloadProjectFile(project);
+  }
+
+  async function handleStageProject(project, onProgress) {
+    const validation = await validateProject(project);
+    if (!validation.valid) throw new Error('El proyecto dejó de ser válido antes de cargar staging.');
+    const { session, repository } = await requireLifecycleSession();
+    return stageProject(repository, project, session.user.id, { onProgress });
+  }
+
+  async function handleDiscardStaging(importId) {
+    const { repository } = await requireLifecycleSession();
+    return discardStaging(repository, importId);
+  }
+
+  function countsAreEqual(left, right) {
+    return ['seds', 'llaves', 'fallas'].every(table => left?.[table] === right?.[table]);
+  }
+
+  async function getSupplyMasterCount() {
+    const { count, error } = await supabase.from('suministros_coordenadas').select('*', { count: 'exact', head: true });
+    if (error || !Number.isInteger(count)) throw new Error('No se pudo verificar el maestro de suministros.');
+    return count;
+  }
+
+  async function finishProjectLifecycle(result, successMessage) {
+    await clearActiveLocalProject();
+    clearExpectedLocalProject();
+    await invalidateSedsCache();
+    setLocalDatabase({});
+    setNumberedPointsList([]);
+    setCurrentSedId('');
+    setCurrentLlaveId('');
+    setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
+    await loadSupabaseData({ skipCache: true });
+    alert(`${successMessage}\n\nSED: ${result.seds}\nCircuitos: ${result.llaves}\nFallas: ${result.fallas}`);
+  }
+
+  async function handleFinalizeProject(importId, displayedCurrentCounts, replacementCounts) {
+    const { repository } = await requireLifecycleSession();
+    const [freshCounts, supplyBefore] = await Promise.all([
+      getMainDatabaseState(createSupabaseProjectRepository(supabase)),
+      getSupplyMasterCount()
+    ]);
+    if (!countsAreEqual(freshCounts, displayedCurrentCounts)) {
+      const error = new Error('Los conteos de la Base Principal cambiaron. Revisa y confirma nuevamente.');
+      error.code = 'CURRENT_COUNTS_CHANGED';
+      error.counts = freshCounts;
+      throw error;
+    }
+    const result = await finalizeStagedProject(repository, importId, freshCounts);
+    const [verified, supplyAfter] = await Promise.all([
+      getMainDatabaseState(createSupabaseProjectRepository(supabase)),
+      getSupplyMasterCount()
+    ]);
+    if (!countsAreEqual(verified, replacementCounts) || supplyAfter !== supplyBefore) {
+      const error = new Error('La RPC finalizó, pero la verificación remota posterior no coincide. No reintentes sin revisar la Base Principal.');
+      error.code = 'POST_FINALIZATION_VERIFICATION_FAILED';
+      error.finalized = true;
+      error.counts = verified;
+      throw error;
+    }
+    const wasImport = freshCounts.isEmpty || result.operation === 'import';
+    await finishProjectLifecycle(result, wasImport ? 'Proyecto importado correctamente.' : 'Proyecto reemplazado correctamente.');
+    return result;
+  }
+
+  async function handleDeleteMainProject(displayedCurrentCounts) {
+    const { repository } = await requireLifecycleSession();
+    const freshCounts = await getMainDatabaseState(createSupabaseProjectRepository(supabase));
+    if (!countsAreEqual(freshCounts, displayedCurrentCounts)) {
+      const error = new Error('Los conteos de la Base Principal cambiaron. Revisa y confirma nuevamente.');
+      error.code = 'CURRENT_COUNTS_CHANGED';
+      error.counts = freshCounts;
+      throw error;
+    }
+    const result = await deleteCurrentProject(repository, freshCounts);
+    const verified = await getMainDatabaseState(createSupabaseProjectRepository(supabase));
+    if (!verified.isEmpty) throw new Error('La verificación remota indica que la Base Principal no quedó vacía.');
+    await finishProjectLifecycle(result, 'Proyecto actual borrado correctamente.');
+    return result;
   }
 
   // Filtrado flexible de Puntos por SED y Llave
@@ -180,13 +463,17 @@ export default function Page() {
 
   // Importación JSON
   function handleImportJson(files) {
+    if (!isEditable) {
+      alert('El proyecto local está en modo solo lectura. Cierra el proyecto local para cargar registros en la Base Principal.');
+      return;
+    }
     if (!files || files.length === 0) return;
     Array.from(files).forEach(file => {
       const reader = new FileReader();
-      reader.onload = (evt) => {
+      reader.onload = async (evt) => {
         try {
-          const rawData = JSON.parse(evt.target.result);
-          mergeJsonData(rawData, file.name);
+          const rawData = parseProjectJson(evt.target.result);
+          await mergeJsonData(rawData, file.name);
         } catch(err) {
           alert(`❌ Error al leer el archivo JSON "${file.name}":\n` + err.message);
         }
@@ -198,11 +485,15 @@ export default function Page() {
     });
   }
 
-  function handleImportJsonText(jsonText) {
+  async function handleImportJsonText(jsonText) {
+    if (!isEditable) {
+      alert('El proyecto local está en modo solo lectura. Cierra el proyecto local para cargar registros en la Base Principal.');
+      return;
+    }
     if (!jsonText || !jsonText.trim()) return;
     try {
-      const rawData = JSON.parse(jsonText.trim());
-      mergeJsonData(rawData, 'Texto Pegado');
+      const rawData = parseProjectJson(jsonText.trim());
+      await mergeJsonData(rawData, 'Texto Pegado');
     } catch(err) {
       alert('❌ Error al procesar el código JSON pegado. Verifique que el formato esté completo y sea un JSON válido.\nDetalle: ' + err.message);
     }
@@ -258,9 +549,49 @@ export default function Page() {
     return null;
   }
 
-  function mergeJsonData(rawData, sourceName = 'Archivo') {
+  function prepareImportedFault(pt, fallbackTicket, fallbackSedLlave = '00007S-3SP') {
+    const ticketVal = String(getFlexibleValue(pt, ['ticket', 'nro', 'incidencia', 'id', 'nroticket'])).trim();
+    const sedLlaveVal = String(getFlexibleValue(pt, ['sedllave', 'sed_llave', 'circuito']) || fallbackSedLlave);
+    const partes = sedLlaveVal.split('-');
+    const sedVal = String(pt.sed || partes[0] || 'SED');
+    const llaveSysVal = String(pt.llaveSistema || partes[1] || 'LLAVE');
+
+    return {
+      coords: pt.coords || extractCoordsFromRow(pt),
+      ticket: ticketVal || fallbackTicket,
+      horaInicio: String(getFlexibleValue(pt, ['horainicio', 'hora', 'fecha', 'inicio']) || new Date().toLocaleString()),
+      zona: String(getFlexibleValue(pt, ['zona', 'distrito', 'area']) || 'Zona Norte'),
+      set: String(getFlexibleValue(pt, ['set', 'subestacion']) || 'SET'),
+      alimentador: String(getFlexibleValue(pt, ['alimentador', 'alim', 'circuito']) || 'Alim'),
+      nota: String(getFlexibleValue(pt, ['nota', 'comentario', 'observacion']) || 'Falla atendida'),
+      odm: String(getFlexibleValue(pt, ['odm', 'orden']) || 'ODM-000'),
+      suministro: normalizeSuministro(getFlexibleValue(pt, ['suministro', 'nis'])) || '',
+      sedLlave: sedLlaveVal,
+      sed: sedVal,
+      llaveSistema: llaveSysVal,
+      llaveCampo: String(pt.llaveCampo || `${llaveSysVal} (Campo)`),
+      falla: String(getFlexibleValue(pt, ['falla', 'fallareal', 'averia', 'descripcion']) || 'Averia reparada'),
+      causa: String(getFlexibleValue(pt, ['causa', 'diagnostico']) || 'Deterioro'),
+      linkCroquis: String(getFlexibleValue(pt, ['linkcroquis', 'croquis', 'link', 'mapa', 'url']) || ''),
+      fotos: pt.fotos || [],
+      coordSource: pt.coordSource || pt.coord_source || null,
+      coordLookupSuministro: pt.coordLookupSuministro || pt.coord_lookup_suministro || null
+    };
+  }
+
+  async function mergeJsonData(rawData, sourceName = 'Archivo') {
     if (!rawData) {
       alert(`⚠️ El contenido de ${sourceName} está vacío.`);
+      return;
+    }
+
+    if (rawData.format === GEOPLUZ_PROJECT_FORMAT) {
+      alert('Este archivo corresponde a un proyecto GEOPLUZ. Ábrelo desde la sección Proyecto para validarlo y visualizarlo de forma segura.');
+      return;
+    }
+
+    if (!isEditable) {
+      alert('El proyecto local está en modo solo lectura. No se mezclaron registros.');
       return;
     }
 
@@ -360,6 +691,10 @@ export default function Page() {
       processedAny = true;
       let addedCount = 0;
       const detectedConflicts = [];
+      const lookupCandidates = incomingFallas.map((pt, index) =>
+        prepareImportedFault(pt, `TK-${Date.now()}-${index + 1}`)
+      );
+      const { faults: georeferencedPoints, summary } = await georeferenceFaultBatch(supabase, lookupCandidates);
 
       setNumberedPointsList(prev => {
         const existing = [...prev];
@@ -370,7 +705,7 @@ export default function Page() {
           }
         });
 
-        incomingFallas.forEach(pt => {
+        georeferencedPoints.forEach(pt => {
           const ticketVal = String(getFlexibleValue(pt, ['ticket', 'nro', 'incidencia', 'id', 'nroticket'])).trim();
           const ticketKey = ticketVal ? ticketVal.toLowerCase() : '';
 
@@ -401,7 +736,9 @@ export default function Page() {
             falla: String(getFlexibleValue(pt, ['falla', 'fallareal', 'averia', 'descripcion']) || 'Avería reparada'),
             causa: String(getFlexibleValue(pt, ['causa', 'diagnostico']) || 'Deterioro'),
             linkCroquis: String(getFlexibleValue(pt, ['linkcroquis', 'croquis', 'link', 'mapa', 'url']) || ''),
-            fotos: pt.fotos || []
+            fotos: pt.fotos || [],
+            coordSource: pt.coordSource || null,
+            coordLookupSuministro: pt.coordLookupSuministro || null
           };
 
           if (ticketKey && existingMap.has(ticketKey)) {
@@ -432,9 +769,10 @@ export default function Page() {
         setConflictsList(detectedConflicts);
         setCurrentSourceName(sourceName);
         setIsConflictModalOpen(true);
+        setTimeout(() => alert(formatGeoreferenceSummary(summary)), 100);
       } else {
         setTimeout(() => {
-          alert(`✅ ¡FALLAS CARGADAS DESDE ${sourceName.toUpperCase()}!\n\n• Agregados: ${addedCount} registro(s) nuevo(s).`);
+          alert(`✅ ¡FALLAS CARGADAS DESDE ${sourceName.toUpperCase()}!\n\n• Agregados: ${addedCount} registro(s) nuevo(s).\n\n${formatGeoreferenceSummary(summary)}`);
         }, 100);
       }
     }
@@ -484,16 +822,19 @@ export default function Page() {
 
   // Importación Excel
   function handleImportExcel(file) {
+    if (!isEditable) {
+      alert('El proyecto local está en modo solo lectura. Cierra el proyecto local para importar registros.');
+      return;
+    }
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
         const data = new Uint8Array(evt.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
-        let importedPoints = 0;
         let skippedPoints = 0;
-        const newPoints = [...numberedPointsList];
-        const existingTickets = new Set(newPoints.map(p => String(p.ticket).trim().toLowerCase()).filter(Boolean));
+        const importedBatch = [];
+        const existingTickets = new Set(numberedPointsList.map(p => String(p.ticket).trim().toLowerCase()).filter(Boolean));
         let firstImportedSed = null;
 
         workbook.SheetNames.forEach(sheetName => {
@@ -512,49 +853,32 @@ export default function Page() {
               }
               if (ticketKey) existingTickets.add(ticketKey);
 
-              const sedLlaveVal = String(getFlexibleValue(row, ['sedllave', 'sed_llave', 'circuito']) || sheetName || '00007S-5SP');
-              const partes = sedLlaveVal.split('-');
-              const sedVal = partes[0] || '00007S';
-              const llaveVal = partes[1] || '5SP';
+              const pointData = prepareImportedFault(
+                row,
+                `TK-${Date.now()}-${importedBatch.length + 1}`,
+                sheetName || '00007S-5SP'
+              );
 
-              if (!firstImportedSed && sedVal) {
-                firstImportedSed = sedVal;
+              if (!firstImportedSed && pointData.sed) {
+                firstImportedSed = pointData.sed;
               }
-
-              const pointNum = newPoints.length + 1;
-              const pointData = {
-                number: pointNum,
-                coords: coords,
-                ticket: ticket || `TK-${Math.floor(Math.random()*90000+10000)}`,
-                horaInicio: String(getFlexibleValue(row, ['horainicio', 'hora', 'fecha', 'inicio']) || new Date().toLocaleString()),
-                zona: String(getFlexibleValue(row, ['zona', 'distrito', 'area']) || 'Zona Centro'),
-                set: String(getFlexibleValue(row, ['set', 'subestacion']) || 'SET'),
-                alimentador: String(getFlexibleValue(row, ['alimentador', 'alim', 'circuito']) || 'Alim'),
-                nota: String(getFlexibleValue(row, ['nota', 'comentario', 'observacion']) || 'Falla atendida'),
-                odm: String(getFlexibleValue(row, ['odm', 'orden']) || 'ODM-000'),
-                suministro: String(getFlexibleValue(row, ['suministro', 'nis']) || 'N/A'),
-                sedLlave: sedLlaveVal,
-                sed: sedVal,
-                llaveSistema: llaveVal,
-                llaveCampo: `${llaveVal} (Campo)`,
-                falla: String(getFlexibleValue(row, ['falla', 'fallareal', 'averia', 'descripcion']) || 'Avería reparada'),
-                causa: String(getFlexibleValue(row, ['causa', 'diagnostico']) || 'Deterioro'),
-                linkCroquis: String(getFlexibleValue(row, ['linkcroquis', 'croquis', 'link', 'mapa', 'url']) || '')
-              };
-              newPoints.push(pointData);
-              importedPoints++;
-              saveFallaToSupabase(pointData);
+              importedBatch.push(pointData);
             }
           });
         });
 
-        setNumberedPointsList(newPoints);
+        const { faults: georeferencedPoints, summary } = await georeferenceFaultBatch(supabase, importedBatch);
+        const savedPoints = await saveFallasBatchToSupabase(georeferencedPoints);
+        setNumberedPointsList(prev => [
+          ...prev,
+          ...savedPoints.map((point, index) => ({ ...point, number: prev.length + index + 1 }))
+        ]);
 
         if (firstImportedSed) {
           setCurrentSedId(firstImportedSed);
         }
 
-        let msg = `✅ EXCEL IMPORTADO:\n\n• Agregados: ${importedPoints} registros.`;
+        let msg = `✅ EXCEL IMPORTADO:\n\n• Agregados: ${savedPoints.length} registros.\n\n${formatGeoreferenceSummary(summary)}`;
         if (skippedPoints > 0) {
           msg += `\n• Omitidos por Ticket duplicado: ${skippedPoints} registros.`;
         }
@@ -564,16 +888,6 @@ export default function Page() {
       }
     };
     reader.readAsArrayBuffer(file);
-  }
-
-  function handleExportJson() {
-    const dataStr = JSON.stringify(localDatabase, null, 2);
-    const blob = new Blob([dataStr], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "geopluz_datos.json";
-    link.click();
   }
 
   async function handleExportExcel() {
@@ -590,6 +904,10 @@ export default function Page() {
   }
 
   async function checkEditPermission() {
+    if (!isEditable) {
+      alert('Este proyecto local está en modo solo lectura. Cierra el proyecto local para volver a editar la Base Principal.');
+      return false;
+    }
     return true;
   }
 
@@ -597,6 +915,7 @@ export default function Page() {
   // Usando useCallback para que la referencia se actualice cuando cambie relocatingPointIndex,
   // lo que permite que la ref en MapViewer siempre tenga el callback más reciente.
   const handleMapClick = useCallback(async (latlng) => {
+    if (!isEditable) return;
     if (relocatingPointIndex !== null) {
       const allowed = await checkEditPermission();
       if (!allowed) {
@@ -607,10 +926,7 @@ export default function Page() {
         const updated = [...prev];
         const targetPoint = updated[relocatingPointIndex];
         if (targetPoint) {
-          updated[relocatingPointIndex] = {
-            ...targetPoint,
-            coords: [latlng.lat, latlng.lng]
-          };
+          updated[relocatingPointIndex] = markCoordinatesManual(targetPoint, [latlng.lat, latlng.lng]);
           saveFallaToSupabase(updated[relocatingPointIndex]);
           alert(`✅ Punto de Falla #${targetPoint.localNumber || targetPoint.number || ''} reubicado con éxito en: ${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`);
         }
@@ -641,7 +957,9 @@ export default function Page() {
       llaveSistema: currentLlaveId,
       llaveCampo: `${currentLlaveId} (Campo)`,
       falla: 'Cable subterráneo cortado',
-      causa: 'Excavación externa'
+      causa: 'Excavación externa',
+      coordSource: COORD_SOURCE.MANUAL,
+      coordLookupSuministro: null
     };
     
     const updated = [...numberedPointsList, newPoint];
@@ -649,16 +967,31 @@ export default function Page() {
     setEditingPointIndex(updated.length - 1);
     setIsFormOpen(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relocatingPointIndex, isAddPointMode, isPresentationMode, numberedPointsList, currentSedId, currentLlaveId]);
+  }, [relocatingPointIndex, isAddPointMode, isPresentationMode, numberedPointsList, currentSedId, currentLlaveId, isEditable]);
 
   // Guardado de Falla
   function handleSavePoint(pointData) {
+    if (!isEditable) {
+      setIsFormOpen(false);
+      setEditingPointIndex(null);
+      return;
+    }
     const updated = [...numberedPointsList];
+    const existingPoint = editingPointIndex !== null ? updated[editingPointIndex] : null;
+    let savedPoint = {
+      ...(existingPoint || {}),
+      ...pointData,
+      suministro: normalizeSuministro(pointData.suministro) || '',
+      coordLookupSuministro: existingPoint?.coordLookupSuministro || pointData.coordLookupSuministro || null
+    };
+    if (!existingPoint || !coordinatePairsEqual(existingPoint, savedPoint)) {
+      savedPoint = markCoordinatesManual(savedPoint, savedPoint.coords);
+    }
     if (editingPointIndex !== null && updated[editingPointIndex]) {
-      updated[editingPointIndex] = { ...updated[editingPointIndex], ...pointData };
+      updated[editingPointIndex] = savedPoint;
     } else {
        // if we are inserting without editing index... but normally editingPointIndex is set
-       updated.push(pointData);
+       updated.push(savedPoint);
     }
     setNumberedPointsList(updated);
     setIsFormOpen(false);
@@ -667,27 +1000,57 @@ export default function Page() {
     setEditingPointIndex(null);
   }
 
+  function buildFallaRecord(point) {
+    const pair = isValidCoordinatePair(point) ? getCoordinatePair(point) : [null, null];
+    return {
+      sed_id: point.sed,
+      llave_code: point.llaveSistema,
+      sed_llave: point.sedLlave,
+      ticket: point.ticket,
+      suministro: normalizeSuministro(point.suministro),
+      falla_real: point.falla,
+      causa: point.causa,
+      nota: point.nota,
+      odm: point.odm,
+      zona: point.zona,
+      set_alimentador: `${point.set || ''} / ${point.alimentador || ''}`,
+      hora_inicio: point.horaInicio,
+      latitud: pair[0],
+      longitud: pair[1],
+      link_croquis: point.linkCroquis || null,
+      fotos: point.fotos || [],
+      coord_source: pair[0] !== null ? (point.coordSource || null) : null,
+      coord_lookup_suministro: point.coordLookupSuministro || null
+    };
+  }
+
+  async function saveFallasBatchToSupabase(points) {
+    if (!isEditable) throw new Error('El proyecto local está en modo solo lectura.');
+    if (!isSupabaseConfigured || !supabase) {
+      throw new Error('Supabase no esta configurado. No se importaron las fallas.');
+    }
+    if (points.length === 0) return [];
+
+    const savedByTicket = new Map();
+    const chunkSize = 300;
+    for (let index = 0; index < points.length; index += chunkSize) {
+      const chunk = points.slice(index, index + chunkSize);
+      const { data, error } = await supabase.from('fallas').insert(chunk.map(buildFallaRecord)).select('id, ticket');
+      if (error) throw error;
+      (data || []).forEach((row) => savedByTicket.set(String(row.ticket || '').trim().toLowerCase(), row.id));
+    }
+
+    return points.map((point) => ({
+      ...point,
+      id: savedByTicket.get(String(point.ticket || '').trim().toLowerCase()) || point.id
+    }));
+  }
+
   async function saveFallaToSupabase(point) {
+    if (!isEditable) return;
     if (!isSupabaseConfigured || !supabase) return;
     try {
-      const record = {
-        sed_id: point.sed,
-        llave_code: point.llaveSistema,
-        sed_llave: point.sedLlave,
-        ticket: point.ticket,
-        suministro: point.suministro,
-        falla_real: point.falla,
-        causa: point.causa,
-        nota: point.nota,
-        odm: point.odm,
-        zona: point.zona,
-        set_alimentador: `${point.set} / ${point.alimentador}`,
-        hora_inicio: point.horaInicio,
-        latitud: point.coords ? point.coords[0] : null,
-        longitud: point.coords ? point.coords[1] : null,
-        link_croquis: point.linkCroquis || null,
-        fotos: point.fotos || []
-      };
+      const record = buildFallaRecord(point);
       
       if (point.id) {
         await supabase.from('fallas').update(record).eq('id', point.id);
@@ -708,17 +1071,98 @@ export default function Page() {
   }
 
   // Eliminar Falla
-  async function handleDeletePoint() {
-    alert('Eliminar fallas está deshabilitado por la política de seguridad actual.');
+  async function handleDeletePoint(index) {
+    if (!isEditable) {
+      alert('El proyecto local está en modo solo lectura.');
+      return;
+    }
+    const point = numberedPointsList[index];
+    if (!point || deletingPointId !== null) return;
+    if (!point.id) {
+      alert('Esta falla todavía no tiene un ID persistido. Guárdala en la base principal antes de eliminarla.');
+      return;
+    }
+    if (!isSupabaseConfigured || !supabase) {
+      alert('Supabase no está configurado. La falla no fue eliminada.');
+      return;
+    }
+
+    const label = point.ticket ? ` ${point.ticket}` : ` #${point.localNumber || point.number || ''}`;
+    const confirmed = confirm(`¿Eliminar la falla${label}? Esta acción eliminará el registro de la base de datos.`);
+    if (!confirmed) return;
+
+    setDeletingPointId(point.id);
+    try {
+      const { data, error } = await supabase
+        .from('fallas')
+        .delete()
+        .eq('id', point.id)
+        .select('id');
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('Supabase no confirmó la eliminación del registro.');
+      }
+
+      setNumberedPointsList(prev => prev
+        .filter(item => item.id !== point.id)
+        .map((item, itemIndex) => ({ ...item, number: itemIndex + 1 }))
+      );
+      if (editingPointIndex === index) {
+        setEditingPointIndex(null);
+        setIsFormOpen(false);
+      } else if (editingPointIndex !== null && editingPointIndex > index) {
+        setEditingPointIndex(editingPointIndex - 1);
+      }
+      if (relocatingPointIndex === index) {
+        setRelocatingPointIndex(null);
+      } else if (relocatingPointIndex !== null && relocatingPointIndex > index) {
+        setRelocatingPointIndex(relocatingPointIndex - 1);
+      }
+      alert('Falla eliminada correctamente.');
+    } catch (error) {
+      console.error('Error eliminando falla en Supabase:', {
+        message: error?.message || 'Error desconocido',
+        code: error?.code || null
+      });
+      alert('No se pudo eliminar la falla. El registro permanece visible.');
+    } finally {
+      setDeletingPointId(null);
+    }
   }
 
   // Eliminar SED y Llave
-  async function handleDeleteSed() {
-    alert('Eliminar SEDs está deshabilitado por la política de seguridad actual.');
+  async function handleDeleteSed(sedId) {
+    if (!isEditable || !sedId || !supabase) return;
+    const allowed = await checkEditPermission();
+    if (!allowed) return;
+    const { count, error: countError } = await supabase.from('fallas').select('*', { count: 'exact', head: true }).eq('sed_id', sedId);
+    if (countError) return alert('No se pudo comprobar si existen fallas relacionadas. No se eliminó la SED.');
+    const confirmed = confirm(`¿Eliminar la SED ${sedId}?\n\nSus llaves se eliminarán por la relación de base de datos.\n${count || 0} fallas tienen sed_id exacto igual a esta SED y NO serán eliminadas.\n\nNo se aplicarán heurísticas sobre sed_llave.`);
+    if (!confirmed) return;
+    const { data, error } = await supabase.from('seds').delete().eq('id', sedId).select('id');
+    if (error || !data?.length) return alert('No se pudo eliminar la SED. No se realizaron limpiezas adicionales.');
+    await invalidateSedsCache();
+    setCurrentSedId('');
+    setCurrentLlaveId('');
+    await loadSupabaseData({ skipCache: true });
+    alert('SED eliminada. Las fallas existentes se conservaron sin modificar.');
   }
 
-  async function handleDeleteLlave() {
-    alert('Eliminar llaves está deshabilitado por la política de seguridad actual.');
+  async function handleDeleteLlave(sedId, llaveCode) {
+    if (!isEditable || !sedId || !llaveCode || !supabase) return;
+    const allowed = await checkEditPermission();
+    if (!allowed) return;
+    const { count, error: countError } = await supabase.from('fallas').select('*', { count: 'exact', head: true }).eq('sed_id', sedId).eq('llave_code', llaveCode);
+    if (countError) return alert('No se pudo comprobar si existen fallas relacionadas. No se eliminó el circuito.');
+    const confirmed = confirm(`¿Eliminar el circuito ${llaveCode} de la SED ${sedId}?\n\n${count || 0} fallas coinciden exactamente en sed_id y llave_code y NO serán eliminadas.`);
+    if (!confirmed) return;
+    const { data, error } = await supabase.from('llaves').delete().eq('sed_id', sedId).eq('llave_code', llaveCode).select('id');
+    if (error || !data?.length) return alert('No se pudo eliminar el circuito. Las fallas permanecen intactas.');
+    await invalidateSedsCache();
+    setCurrentLlaveId('');
+    await loadSupabaseData({ skipCache: true });
+    alert('Circuito eliminado. Las fallas existentes se conservaron sin modificar.');
   }
 
   // Reubicación
@@ -730,6 +1174,7 @@ export default function Page() {
   }
 
   async function saveSedsToSupabase(sedsToSave) {
+    if (!isEditable) return;
     // Guardar en la caché local IndexedDB
     setCachedSeds(sedsToSave);
 
@@ -775,6 +1220,10 @@ export default function Page() {
   }
 
   async function handleSaveToMainDatabase() {
+    if (!isEditable) {
+      alert('Un proyecto local no puede guardarse en Supabase en esta fase.');
+      return;
+    }
     const allowed = await checkEditPermission();
     if (!allowed) return;
 
@@ -784,31 +1233,6 @@ export default function Page() {
 
       // 2. Guardar Fallas en lote masivo (Bulk Upsert)
       if (numberedPointsList.length > 0) {
-        const fallasBatch = numberedPointsList.map(point => {
-          const record = {
-            sed_id: point.sed,
-            llave_code: point.llaveSistema,
-            sed_llave: point.sedLlave,
-            ticket: point.ticket,
-            suministro: point.suministro,
-            falla_real: point.falla,
-            causa: point.causa,
-            nota: point.nota,
-            odm: point.odm,
-            zona: point.zona,
-            set_alimentador: `${point.set} / ${point.alimentador}`,
-            hora_inicio: point.horaInicio,
-            latitud: point.coords ? point.coords[0] : null,
-            longitud: point.coords ? point.coords[1] : null,
-            link_croquis: point.linkCroquis || null,
-            fotos: point.fotos || []
-          };
-          if (point.id) {
-            record.id = point.id;
-          }
-          return record;
-        });
-
         if (isSupabaseConfigured && supabase) {
           // 1. Consultar a Supabase qué tickets ya existen en la BD para vincular sus IDs
           const ticketsList = numberedPointsList.map(p => p.ticket).filter(Boolean);
@@ -838,24 +1262,7 @@ export default function Page() {
             const tKey = point.ticket ? String(point.ticket).trim().toLowerCase() : '';
             const existingId = point.id || existingTicketsMap.get(tKey);
 
-            const record = {
-              sed_id: point.sed,
-              llave_code: point.llaveSistema,
-              sed_llave: point.sedLlave,
-              ticket: point.ticket,
-              suministro: point.suministro,
-              falla_real: point.falla,
-              causa: point.causa,
-              nota: point.nota,
-              odm: point.odm,
-              zona: point.zona,
-              set_alimentador: `${point.set} / ${point.alimentador}`,
-              hora_inicio: point.horaInicio,
-              latitud: point.coords ? point.coords[0] : null,
-              longitud: point.coords ? point.coords[1] : null,
-              link_croquis: point.linkCroquis || null,
-              fotos: point.fotos || []
-            };
+            const record = buildFallaRecord(point);
             if (existingId) {
               record.id = existingId;
             }
@@ -919,7 +1326,7 @@ export default function Page() {
 
   function handleFlyToPoint(point) {
     if (mapRef.current && point.coords) {
-      mapRef.current.focusFailure(point.coords);
+      mapRef.current.focusFailure(point);
     }
   }
 
@@ -956,6 +1363,9 @@ export default function Page() {
   useEffect(() => {
     setIsSegmentSelectionMode(false);
     setSelectedLineIds([]);
+    setCircuitPhase1Analysis(null);
+    setSelectedAnalysisSegmentId(null);
+    setFilterByAnalysisSegment(false);
   }, [currentSedId, currentLlaveId]);
 
   const currentLlaveData = currentSedId && currentLlaveId && localDatabase[currentSedId]?.llaves?.[currentLlaveId]
@@ -965,6 +1375,18 @@ export default function Page() {
   const currentSedCoord = localDatabase[currentSedId]?.sedCoord || null;
 
   const currentAnalysis = currentLlaveData?.analysis || { note: '', cableGroups: [], status: 'cargado' };
+  const selectedAnalysisSegment = resolveAnalysisSegment(circuitPhase1Analysis?.analysisSegmentIndicators, selectedAnalysisSegmentId);
+  const analysisSegmentFaultView = buildAnalysisSegmentFaultView(
+    filteredPoints,
+    circuitPhase1Analysis?.faultAssignment,
+    selectedAnalysisSegment,
+    filterByAnalysisSegment
+  );
+  const selectedAnalysisSegmentEdges = selectedAnalysisSegment
+    ? [...selectedAnalysisSegment.edgeIds, ...selectedAnalysisSegment.connectorEdgeIds]
+      .map(edgeId => circuitPhase1Analysis?.topology?.originalEdges?.find(edge => edge.edgeId === edgeId))
+      .filter(Boolean)
+    : [];
   const circuitEntries = Object.entries(localDatabase).flatMap(([sedId, sed]) => Object.entries(sed.llaves || {}).map(([llaveId, llave]) => ({
     sedId, llaveId, sedName: sed.name || sedId, status: llave.analysis?.status || 'cargado'
   })));
@@ -972,12 +1394,37 @@ export default function Page() {
     .filter((line, index) => selectedLineIds.includes(String(line.id ?? index)))
     .reduce((total, line) => total + (Number(line.length) || 0), 0);
 
+  function handleAnalyzeCurrentCircuit() {
+    if (!currentLlaveData) return;
+    const linesData = Array.isArray(currentLlaveData.linesData)
+      ? currentLlaveData.linesData
+      : serializeLlaveLines(currentLlaveData);
+    const nextAnalysis = analyzeCircuit(linesData, filteredPoints, { rootCoordinate: currentSedCoord });
+    const nextSelectedSegment = resolveAnalysisSegment(nextAnalysis.analysisSegmentIndicators, selectedAnalysisSegmentId);
+    setCircuitPhase1Analysis(nextAnalysis);
+    setSelectedAnalysisSegmentId(nextSelectedSegment?.analysisSegmentId || null);
+    if (!nextSelectedSegment) setFilterByAnalysisSegment(false);
+  }
+
+  function handleSelectAnalysisSegment(analysisSegmentId) {
+    if (analysisSegmentId === selectedAnalysisSegmentId) {
+      setSelectedAnalysisSegmentId(null);
+      setFilterByAnalysisSegment(false);
+      return;
+    }
+    setSelectedAnalysisSegmentId(analysisSegmentId);
+  }
+
   function updateCurrentLlaveAnalysis(updater) {
+    if (!isEditable) return;
     if (!currentSedId || !currentLlaveId) return;
+    setCircuitPhase1Analysis(null);
     setLocalDatabase(prev => {
       const llave = prev[currentSedId]?.llaves?.[currentLlaveId];
       if (!llave) return prev;
-      const updatedLlave = { ...llave, analysis: updater(llave.analysis || { note: '', cableGroups: [] }) };
+      const analysis = updater(llave.analysis || { note: '', cableGroups: [] });
+      const updatedLlave = { ...llave, analysis, linesData: null };
+      updatedLlave.linesData = serializeLlaveLines(updatedLlave);
       const updated = { ...prev, [currentSedId]: { ...prev[currentSedId], llaves: { ...prev[currentSedId].llaves, [currentLlaveId]: updatedLlave } } };
       setCachedSeds(updated);
       saveSedsToSupabase({ [currentSedId]: updated[currentSedId] });
@@ -1083,11 +1530,14 @@ export default function Page() {
 
   return (
     <>
+      <DataSourceBadge dataSource={dataSource} onCloseLocalProject={handleCloseLocalProject} />
       {!isPresentationMode && (
         <Sidebar
           seds={localDatabase}
           faultPoints={numberedPointsList}
-          filteredFaultPoints={filteredPoints}
+          filteredFaultPoints={analysisSegmentFaultView.faults}
+          analysisFaultAssignments={analysisSegmentFaultView.assignments}
+          analysisCircuitFaultTotal={filteredPoints.length}
           currentSedId={currentSedId}
           setCurrentSedId={handleSedSelect}
           currentLlaveId={currentLlaveId}
@@ -1103,11 +1553,18 @@ export default function Page() {
           circuitNote={currentAnalysis.note}
           cableGroups={currentAnalysis.cableGroups || []}
           circuitStatus={currentAnalysis.status}
+          circuitPhase1Analysis={circuitPhase1Analysis}
+          selectedAnalysisSegmentId={selectedAnalysisSegmentId}
+          filterByAnalysisSegment={filterByAnalysisSegment}
           isSegmentSelectionMode={isSegmentSelectionMode}
           selectedLineCount={selectedLineIds.length}
           selectedDistance={selectedDistance}
           onSaveCircuitNote={handleSaveCircuitNote}
           onSaveCircuitStatus={handleSaveCircuitStatus}
+          onAnalyzeCircuit={handleAnalyzeCurrentCircuit}
+          onSelectAnalysisSegment={handleSelectAnalysisSegment}
+          onFilterSelectedAnalysisSegment={() => { if (selectedAnalysisSegment) setFilterByAnalysisSegment(true); }}
+          onShowAllAnalysisFaults={() => setFilterByAnalysisSegment(false)}
           onToggleSegmentSelection={handleToggleSegmentSelection}
           onStartEditCableGroup={handleStartEditCableGroup}
           onCancelEditCableGroup={handleCancelEditCableGroup}
@@ -1117,17 +1574,28 @@ export default function Page() {
           onImportJson={handleImportJson}
           onImportJsonText={handleImportJsonText}
           onImportExcel={handleImportExcel}
-          onExportJson={handleExportJson}
           onExportExcel={handleExportExcel}
           onExportPdf={handleExportPdf}
           onSaveToMainDatabase={handleSaveToMainDatabase}
           onDeleteSed={handleDeleteSed}
           onDeleteLlave={handleDeleteLlave}
-          onEditPoint={(idx) => { setEditingPointIndex(idx); setIsFormOpen(true); }}
+          onEditPoint={(idx) => { if (isEditable) { setEditingPointIndex(idx); setIsFormOpen(true); } }}
           onDeletePoint={handleDeletePoint}
+          deletingPointId={deletingPointId}
           onRelocatePoint={handleRelocatePoint}
-          onFlyToPoint={(point) => mapRef.current?.focusFailure?.(point.coords)}
-          onFaultTableExpanded={setIsFaultTableExpanded}
+          onFlyToPoint={(point) => mapRef.current?.focusFailure?.(point)}
+          onMajorOverlayChange={setMajorOverlayOpen}
+          dataSource={dataSource}
+          onDownloadProject={handleDownloadProject}
+          onOpenLocalProject={handleOpenLocalProject}
+          onGetActiveLocalProject={handleGetActiveLocalProject}
+          onCheckMainDatabase={handleCheckMainDatabase}
+          onDownloadMainProject={handleDownloadMainProject}
+          onStageProject={handleStageProject}
+          onDiscardStaging={handleDiscardStaging}
+          onFinalizeProject={handleFinalizeProject}
+          onDeleteMainProject={handleDeleteMainProject}
+          onCloseLocalProject={handleCloseLocalProject}
         />
       )}
       
@@ -1140,19 +1608,23 @@ export default function Page() {
           llaveData={currentLlaveData}
           sedId={currentSedId}
           sedCoord={currentSedCoord}
-          faultPoints={filteredPoints}
+          faultPoints={analysisSegmentFaultView.faults}
           isAddPointMode={isAddPointMode}
           isRelocating={relocatingPointIndex !== null}
           isPresentationMode={isPresentationMode}
+          isEditable={isEditable}
           circuitNote={currentAnalysis.note}
           cableGroups={currentAnalysis.cableGroups || []}
           isSegmentSelectionMode={isSegmentSelectionMode}
           selectedLineIds={selectedLineIds}
+          selectedAnalysisSegmentId={selectedAnalysisSegmentId}
+          selectedAnalysisSegmentEdges={selectedAnalysisSegmentEdges}
+          hasSelectedAnalysisSegment={Boolean(selectedAnalysisSegment)}
           onLineClick={handleLineClick}
           onMapClick={handleMapClick}
           onSedDragEnd={handleSedDragEnd}
           onPointClick={(idx) => { setEditingPointIndex(idx); setIsFormOpen(true); }}
-          hideOverlays={isFaultTableExpanded}
+          hideOverlays={isMajorOverlayOpen}
         />
       </div>
       
@@ -1178,17 +1650,17 @@ export default function Page() {
             onEnterEditMode={handleEnterEditMode}
           />
           <PresentationTablePanel
-            points={filteredPoints}
+            points={analysisSegmentFaultView.faults}
             onRowClick={handleFlyToPoint}
             onExportExcel={handleExportExcel}
             onExportPdf={handleExportPdf}
-            onFullViewChange={setIsFaultTableExpanded}
+            onMajorOverlayChange={setMajorOverlayOpen}
           />
         </>
       )}
       
       <FaultForm
-        isOpen={isFormOpen}
+        isOpen={isEditable && isFormOpen}
         onClose={() => { setIsFormOpen(false); setEditingPointIndex(null); }}
         onSave={handleSavePoint}
         editingPoint={editingPointIndex !== null ? numberedPointsList[editingPointIndex] : null}

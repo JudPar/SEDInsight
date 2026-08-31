@@ -76,6 +76,35 @@ export async function PUT(request) {
   }
 }
 
-export async function DELETE() {
-  return NextResponse.json({ error: 'Eliminar registros está deshabilitado.' }, { status: 405 });
+export async function DELETE(request) {
+  try {
+    const auth = await authenticatedClient(request);
+    if (auth.response) return auth.response;
+    const { supabase } = auth;
+    const id = new URL(request.url).searchParams.get('id');
+
+    if (!id || !/^\d+$/.test(id)) {
+      return NextResponse.json({ error: 'Falta un id de falla válido.' }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+      .from('fallas')
+      .delete()
+      .eq('id', Number(id))
+      .select('id');
+
+    if (error) {
+      return NextResponse.json(
+        { error: 'La falla no pudo eliminarse. Verifica tus permisos.' },
+        { status: 403 }
+      );
+    }
+    if (!data || data.length === 0) {
+      return NextResponse.json({ error: 'La falla no existe o no es accesible.' }, { status: 404 });
+    }
+
+    return NextResponse.json({ success: true, id: data[0].id });
+  } catch {
+    return NextResponse.json({ error: 'No se pudo eliminar la falla.' }, { status: 500 });
+  }
 }

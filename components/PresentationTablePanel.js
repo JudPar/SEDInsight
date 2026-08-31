@@ -1,9 +1,13 @@
 'use client';
 
+import { useCallback } from 'react';
 import FaultTable from './FaultTable';
 
-export default function PresentationTablePanel({ points, onRowClick, onExportExcel, onExportPdf, onFullViewChange }) {
+export default function PresentationTablePanel({ points, onRowClick, onExportExcel, onExportPdf, onMajorOverlayChange }) {
   const count = points ? points.length : 0;
+  const reportTableOverlay = useCallback((isOpen) => {
+    onMajorOverlayChange?.('fault-table', isOpen);
+  }, [onMajorOverlayChange]);
   
   return (
     <div className="presentation-table-panel">
@@ -37,7 +41,7 @@ export default function PresentationTablePanel({ points, onRowClick, onExportExc
           points={points} 
           showActions={false} 
           onRowClick={onRowClick} 
-          onFullViewChange={onFullViewChange}
+          onOverlayChange={reportTableOverlay}
         />
       </div>
     </div>

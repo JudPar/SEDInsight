@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { FAULT_CAUSES, DEFAULT_CAUSE_COLOR } from '@/lib/constants';
 import { supabase } from '@/lib/supabase';
+import { getCoordinateSourceLabel } from '@/lib/faultGeolocation';
 
 
 export default function FaultForm({
@@ -185,6 +186,13 @@ export default function FaultForm({
           <span>📍 {editingPoint ? `Datos de Falla Reparada #${displayNum}` : 'Registro de Falla Atendida'}</span>
           <span onClick={onClose} style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>&times;</span>
         </h3>
+
+        {editingPoint?.coordSource && (
+          <div style={{ marginBottom: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+            Origen de ubicacion: <strong>{getCoordinateSourceLabel(editingPoint.coordSource)}</strong>
+            {editingPoint.coordLookupSuministro ? ` (suministro ${editingPoint.coordLookupSuministro})` : ''}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit}>
           <div className="form-grid">
