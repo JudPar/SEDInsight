@@ -14,7 +14,7 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getCachedSeds, getExpectedLocalProject, invalidateSedsCache, markLocalProjectExpected, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
-import { isSedMatch, isLlaveMatch } from '@/lib/sedUtils';
+import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
 import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
 import { GEOPLUZ_PROJECT_FORMAT, parseProjectJson } from '@/lib/projectFormat';
@@ -104,6 +104,7 @@ export default function Page() {
   // Estado de Navegación
   const [currentSedId, setCurrentSedId] = useState('');
   const [currentLlaveId, setCurrentLlaveId] = useState('');
+  const [showFullSedView, setShowFullSedView] = useState(false);
 
   // Estado UI
   const [currentTheme, setCurrentTheme] = useState('light');
@@ -124,8 +125,10 @@ export default function Page() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingPointIndex, setEditingPointIndex] = useState(null);
 
-  // El acceso exige AuthGate; un proyecto local se mantiene deliberadamente en solo lectura.
-  const isEditable = dataSource.kind === 'SUPABASE';
+  // La copia local editable nunca sincroniza escrituras con Supabase.
+  const isSupabaseSource = dataSource.kind === 'SUPABASE';
+  const isLocalWorkspace = dataSource.kind === 'LOCAL_WORKSPACE';
+  const isEditable = isSupabaseSource || isLocalWorkspace;
   
   const mapRef = useRef(null);
 
@@ -164,7 +167,7 @@ export default function Page() {
     if (cachedLocalProject) {
       const validation = await validateProject(cachedLocalProject);
       if (validation.valid) {
-        applyLocalProject(cachedLocalProject);
+        applyLocalProject(cachedLocalProject, { editable: Boolean(expectedLocalProject?.editable) });
         return;
       }
       await clearActiveLocalProject();
@@ -254,13 +257,13 @@ export default function Page() {
     }
   }
 
-  function applyLocalProject(project) {
+  function applyLocalProject(project, { editable = false } = {}) {
     const model = projectToInternalModel(project);
     setLocalDatabase(model.localDatabase);
     setNumberedPointsList(model.numberedPointsList);
     setDataSource({
-      kind: 'LOCAL_PROJECT',
-      readOnly: true,
+      kind: editable ? 'LOCAL_WORKSPACE' : 'LOCAL_PROJECT',
+      readOnly: !editable,
       projectId: project.project.id,
       projectName: project.project.name,
       sourceKind: project.project.source_kind
@@ -271,19 +274,19 @@ export default function Page() {
     setSelectedLineIds([]);
     setEditingPointIndex(null);
     setIsFormOpen(false);
-    markLocalProjectExpected(project);
+    markLocalProjectExpected(project, { editable });
     const firstSed = Object.keys(model.localDatabase)[0] || '';
     setCurrentSedId(firstSed);
     setCurrentLlaveId(firstSed ? Object.keys(model.localDatabase[firstSed]?.llaves || {})[0] || '' : '');
   }
 
-  async function handleOpenLocalProject(project) {
+  async function handleOpenLocalProject(project, _validationResult, { editable = false } = {}) {
     const validation = await validateProject(project);
     if (!validation.valid) throw new Error('El proyecto dejó de ser válido antes de abrirse.');
     const cached = await setActiveLocalProject(project);
-    applyLocalProject(project);
+    applyLocalProject(project, { editable });
     if (!cached) {
-      alert('El proyecto se abrió localmente, pero el navegador no permitió guardarlo para recargas o para /presentacion.');
+      alert('El proyecto se abrió localmente, pero el navegador no permitió guardarlo para futuras recargas.');
     }
   }
 
@@ -297,6 +300,24 @@ export default function Page() {
     });
   }
 
+  useEffect(() => {
+    if (!isLocalWorkspace) return undefined;
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const project = await createProjectDocument(localDatabase, numberedPointsList, {
+          projectId: dataSource.projectId,
+          projectName: dataSource.projectName,
+          sourceKind: dataSource.sourceKind || 'LOCAL_PROJECT'
+        });
+        const saved = await setActiveLocalProject(project);
+        if (saved) markLocalProjectExpected(project, { editable: true });
+      } catch (error) {
+        console.warn('No se pudo guardar la copia editable local:', error?.message || 'Error desconocido');
+      }
+    }, 350);
+    return () => window.clearTimeout(timeoutId);
+  }, [dataSource.projectId, dataSource.projectName, dataSource.sourceKind, isLocalWorkspace, localDatabase, numberedPointsList]);
+
   async function handleCheckMainDatabase() {
     if (!isSupabaseConfigured || !supabase) throw new Error('Supabase no está configurado para comprobar la Base Principal.');
     const { data: { session }, error } = await supabase.auth.getSession();
@@ -305,7 +326,7 @@ export default function Page() {
   }
 
   async function handleCloseLocalProject() {
-    if (dataSource.kind !== 'LOCAL_PROJECT') return;
+    if (dataSource.kind !== 'LOCAL_PROJECT' && dataSource.kind !== 'LOCAL_WORKSPACE') return;
     await clearActiveLocalProject();
     clearExpectedLocalProject();
     setLocalDatabase({});
@@ -433,18 +454,18 @@ export default function Page() {
     return result;
   }
 
-  // Filtrado flexible de Puntos por SED y Llave
-  const getFilteredPoints = useCallback(() => {
-    return numberedPointsList
-      .map((pt, i) => ({ ...pt, originalIndex: i }))
-      .filter(pt => {
-        if (!currentSedId) return true;
-        return isSedMatch(pt.sed, pt.sedLlave, currentSedId) && isLlaveMatch(pt.llaveSistema, pt.sedLlave, currentLlaveId);
-      })
-      .map((pt, i) => ({ ...pt, localNumber: i + 1 }));
-  }, [numberedPointsList, currentSedId, currentLlaveId]);
-
-  const filteredPoints = getFilteredPoints();
+  // El matching sigue centralizado en sedUtils. La vista completa omite solo el filtro de llave.
+  const selectedLlavePoints = filterFaultsForCircuitView(numberedPointsList, {
+    sedId: currentSedId,
+    llaveId: currentLlaveId,
+    showFullSed: false
+  });
+  const fullSedPoints = filterFaultsForCircuitView(numberedPointsList, {
+    sedId: currentSedId,
+    llaveId: currentLlaveId,
+    showFullSed: true
+  });
+  const filteredPoints = showFullSedView ? fullSedPoints : selectedLlavePoints;
 
   // Seleccionar SED y auto-seleccionar su primera llave
   const handleSedSelect = (sedId) => {
@@ -892,11 +913,13 @@ export default function Page() {
 
   async function handleExportExcel() {
     const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
+    await mapRef.current?.prepareForExport?.();
     await exportExcelBySed(dataToExport, currentSedId, currentLlaveId);
   }
 
   async function handleExportPdf() {
     const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
+    await mapRef.current?.prepareForExport?.();
     await exportPdfReport(dataToExport, currentSedId, currentLlaveId, {
       status: currentAnalysis.status,
       note: currentAnalysis.note
@@ -1025,7 +1048,8 @@ export default function Page() {
   }
 
   async function saveFallasBatchToSupabase(points) {
-    if (!isEditable) throw new Error('El proyecto local está en modo solo lectura.');
+    if (isLocalWorkspace) return points;
+    if (!isSupabaseSource) throw new Error('El proyecto local está en modo solo lectura.');
     if (!isSupabaseConfigured || !supabase) {
       throw new Error('Supabase no esta configurado. No se importaron las fallas.');
     }
@@ -1047,7 +1071,7 @@ export default function Page() {
   }
 
   async function saveFallaToSupabase(point) {
-    if (!isEditable) return;
+    if (!isSupabaseSource) return;
     if (!isSupabaseConfigured || !supabase) return;
     try {
       const record = buildFallaRecord(point);
@@ -1078,6 +1102,18 @@ export default function Page() {
     }
     const point = numberedPointsList[index];
     if (!point || deletingPointId !== null) return;
+    if (isLocalWorkspace) {
+      const label = point.ticket ? ` ${point.ticket}` : ` #${point.localNumber || point.number || ''}`;
+      if (!confirm(`¿Eliminar la falla${label} de esta copia local? Supabase no se modificará.`)) return;
+      setNumberedPointsList(prev => prev
+        .filter((_, itemIndex) => itemIndex !== index)
+        .map((item, itemIndex) => ({ ...item, number: itemIndex + 1 }))
+      );
+      setEditingPointIndex(null);
+      setIsFormOpen(false);
+      setRelocatingPointIndex(null);
+      return;
+    }
     if (!point.id) {
       alert('Esta falla todavía no tiene un ID persistido. Guárdala en la base principal antes de eliminarla.');
       return;
@@ -1133,7 +1169,19 @@ export default function Page() {
 
   // Eliminar SED y Llave
   async function handleDeleteSed(sedId) {
-    if (!isEditable || !sedId || !supabase) return;
+    if (!isEditable || !sedId) return;
+    if (isLocalWorkspace) {
+      if (!confirm(`¿Eliminar la SED ${sedId} de esta copia local? Supabase no se modificará.`)) return;
+      setLocalDatabase(prev => {
+        const updated = { ...prev };
+        delete updated[sedId];
+        return updated;
+      });
+      setCurrentSedId('');
+      setCurrentLlaveId('');
+      return;
+    }
+    if (!supabase) return;
     const allowed = await checkEditPermission();
     if (!allowed) return;
     const { count, error: countError } = await supabase.from('fallas').select('*', { count: 'exact', head: true }).eq('sed_id', sedId);
@@ -1150,7 +1198,20 @@ export default function Page() {
   }
 
   async function handleDeleteLlave(sedId, llaveCode) {
-    if (!isEditable || !sedId || !llaveCode || !supabase) return;
+    if (!isEditable || !sedId || !llaveCode) return;
+    if (isLocalWorkspace) {
+      if (!confirm(`¿Eliminar el circuito ${llaveCode} de esta copia local? Supabase no se modificará.`)) return;
+      setLocalDatabase(prev => {
+        const sed = prev[sedId];
+        if (!sed?.llaves?.[llaveCode]) return prev;
+        const llaves = { ...sed.llaves };
+        delete llaves[llaveCode];
+        return { ...prev, [sedId]: { ...sed, llaves } };
+      });
+      setCurrentLlaveId('');
+      return;
+    }
+    if (!supabase) return;
     const allowed = await checkEditPermission();
     if (!allowed) return;
     const { count, error: countError } = await supabase.from('fallas').select('*', { count: 'exact', head: true }).eq('sed_id', sedId).eq('llave_code', llaveCode);
@@ -1174,7 +1235,7 @@ export default function Page() {
   }
 
   async function saveSedsToSupabase(sedsToSave) {
-    if (!isEditable) return;
+    if (!isSupabaseSource) return;
     // Guardar en la caché local IndexedDB
     setCachedSeds(sedsToSave);
 
@@ -1220,8 +1281,8 @@ export default function Page() {
   }
 
   async function handleSaveToMainDatabase() {
-    if (!isEditable) {
-      alert('Un proyecto local no puede guardarse en Supabase en esta fase.');
+    if (!isSupabaseSource) {
+      alert('La copia editable se guarda solo en este navegador. Usa "Descargar proyecto" para compartirla; Supabase no se modificará.');
       return;
     }
     const allowed = await checkEditPermission();
@@ -1377,11 +1438,13 @@ export default function Page() {
   const currentAnalysis = currentLlaveData?.analysis || { note: '', cableGroups: [], status: 'cargado' };
   const selectedAnalysisSegment = resolveAnalysisSegment(circuitPhase1Analysis?.analysisSegmentIndicators, selectedAnalysisSegmentId);
   const analysisSegmentFaultView = buildAnalysisSegmentFaultView(
-    filteredPoints,
+    selectedLlavePoints,
     circuitPhase1Analysis?.faultAssignment,
     selectedAnalysisSegment,
     filterByAnalysisSegment
   );
+  const visibleFaultPoints = showFullSedView ? fullSedPoints : analysisSegmentFaultView.faults;
+  const sedOverviewLlaves = buildSedOverviewLlaves(localDatabase[currentSedId], currentLlaveId);
   const selectedAnalysisSegmentEdges = selectedAnalysisSegment
     ? [...selectedAnalysisSegment.edgeIds, ...selectedAnalysisSegment.connectorEdgeIds]
       .map(edgeId => circuitPhase1Analysis?.topology?.originalEdges?.find(edge => edge.edgeId === edgeId))
@@ -1399,7 +1462,7 @@ export default function Page() {
     const linesData = Array.isArray(currentLlaveData.linesData)
       ? currentLlaveData.linesData
       : serializeLlaveLines(currentLlaveData);
-    const nextAnalysis = analyzeCircuit(linesData, filteredPoints, { rootCoordinate: currentSedCoord });
+    const nextAnalysis = analyzeCircuit(linesData, selectedLlavePoints, { rootCoordinate: currentSedCoord });
     const nextSelectedSegment = resolveAnalysisSegment(nextAnalysis.analysisSegmentIndicators, selectedAnalysisSegmentId);
     setCircuitPhase1Analysis(nextAnalysis);
     setSelectedAnalysisSegmentId(nextSelectedSegment?.analysisSegmentId || null);
@@ -1426,7 +1489,7 @@ export default function Page() {
       const updatedLlave = { ...llave, analysis, linesData: null };
       updatedLlave.linesData = serializeLlaveLines(updatedLlave);
       const updated = { ...prev, [currentSedId]: { ...prev[currentSedId], llaves: { ...prev[currentSedId].llaves, [currentLlaveId]: updatedLlave } } };
-      setCachedSeds(updated);
+      if (isSupabaseSource) setCachedSeds(updated);
       saveSedsToSupabase({ [currentSedId]: updated[currentSedId] });
       return updated;
     });
@@ -1535,13 +1598,15 @@ export default function Page() {
         <Sidebar
           seds={localDatabase}
           faultPoints={numberedPointsList}
-          filteredFaultPoints={analysisSegmentFaultView.faults}
+          filteredFaultPoints={visibleFaultPoints}
           analysisFaultAssignments={analysisSegmentFaultView.assignments}
-          analysisCircuitFaultTotal={filteredPoints.length}
+          analysisCircuitFaultTotal={selectedLlavePoints.length}
           currentSedId={currentSedId}
           setCurrentSedId={handleSedSelect}
           currentLlaveId={currentLlaveId}
           setCurrentLlaveId={setCurrentLlaveId}
+          showFullSedView={showFullSedView}
+          onToggleFullSedView={() => setShowFullSedView(value => !value)}
           currentTheme={currentTheme}
           setCurrentTheme={setCurrentTheme}
           currentMapStyle={currentMapStyle}
@@ -1550,6 +1615,7 @@ export default function Page() {
           setIsAddPointMode={setIsAddPointMode}
           isPresentationMode={isPresentationMode}
           isEditable={isEditable}
+          canSyncToMainDatabase={isSupabaseSource}
           circuitNote={currentAnalysis.note}
           cableGroups={currentAnalysis.cableGroups || []}
           circuitStatus={currentAnalysis.status}
@@ -1604,11 +1670,14 @@ export default function Page() {
           ref={mapRef}
           currentTheme={currentTheme}
           currentMapStyle={currentMapStyle}
-          circuitId={`${currentSedId}:${currentLlaveId}`}
+          circuitId={`${currentSedId}:${showFullSedView ? 'SED_COMPLETA' : currentLlaveId}`}
           llaveData={currentLlaveData}
+          sedOverviewLlaves={sedOverviewLlaves}
+          showFullSedView={showFullSedView}
+          selectedLlaveId={currentLlaveId}
           sedId={currentSedId}
           sedCoord={currentSedCoord}
-          faultPoints={analysisSegmentFaultView.faults}
+          faultPoints={visibleFaultPoints}
           isAddPointMode={isAddPointMode}
           isRelocating={relocatingPointIndex !== null}
           isPresentationMode={isPresentationMode}

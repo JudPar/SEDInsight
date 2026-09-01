@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   analyzeCircuit,
   analyzeCircuitPhase1,
@@ -7,8 +8,10 @@ import {
   calculateGeographicLineLength,
   classifyFaultAssignmentConfidence,
   findNearestPointOnPolyline,
+  getLineCalibreDisplay,
   hydrateLlave,
-  normalizeCalibreLabel
+  normalizeCalibreLabel,
+  resolveLineCalibre
 } from '../lib/circuitAnalysis.js';
 import { classifyExternalReference, safeExternalNavigationUrl } from '../lib/externalAssetSafety.js';
 import { buildAnalysisBranchFaultView, calculateBranchIndicators, calculateParetoPriority, describeParetoCandidates, resolveAnalysisBranch } from '../lib/branchIndicators.js';
@@ -1127,6 +1130,65 @@ test('analysis segments keep unknown connector length separate from known calibr
   assert.ok(Math.abs(segment.calibres[0].lengthMeters - 60) < 0.1);
   assert.ok(Math.abs(segment.unknownCalibreLengthMeters - 1) < 0.1);
   assert.deepEqual(second, first);
+});
+
+test('structured cableType has priority over manual calibre and reports conflicts', () => {
+  const line = { id: 'structured', cableType: 'NYY 3 x 10', coords: [[0, 0], [0, 0.001]], length: 100 };
+  const groups = [{ calibre: 'NYY 3x16', lineIds: ['structured'] }];
+  const resolution = resolveLineCalibre(line, groups);
+  const result = analyzeCircuitPhase1([line, { [ANALYSIS_MARKER]: { cableGroups: groups } }]);
+
+  assert.equal(resolution.source, 'structured');
+  assert.equal(resolution.normalizedLabel, 'NYY 3X10');
+  assert.equal(resolution.displayLabel, 'NYY 3 x 10');
+  assert.equal(resolution.conflict, true);
+  assert.equal(result.calibreConflicts.length, 1);
+  assert.equal(result.physicalSegmentRecords[0].calibreLabel, 'NYY 3X10');
+  assert.ok(result.warnings.some(warning => warning.code === 'CALIBRE_CONFLICT'));
+});
+
+test('manual cable group is the fallback when cableType is absent', () => {
+  const line = { id: 'manual', coords: [[0, 0], [0, 0.001]], length: 100 };
+  const resolution = resolveLineCalibre(line, [{ calibre: 'N2XY 3x70', lineIds: ['manual'] }]);
+
+  assert.equal(resolution.source, 'cableGroup');
+  assert.equal(resolution.normalizedLabel, 'N2XY 3X70');
+  assert.equal(getLineCalibreDisplay(line, [{ calibre: 'N2XY 3x70', lineIds: ['manual'] }]), 'N2XY 3x70');
+});
+
+test('missing structured and manual calibre remains No informado', () => {
+  const resolution = resolveLineCalibre({ id: 'unknown' }, []);
+  assert.equal(resolution.source, 'unknown');
+  assert.equal(resolution.normalizedLabel, '');
+  assert.equal(resolution.displayLabel, 'No informado');
+});
+
+test('structured calibre propagates deterministically through physical segment, edge, branch and analysis segment', () => {
+  const meter = 1 / 111195.08;
+  const lines = [
+    { id: 'west', cableType: 'NYY 3 x 10', coords: [[0, 0], [0, -30 * meter]], length: 30 },
+    { id: 'east', cableType: 'NYY 3 x 10', coords: [[0, 0], [0, 30 * meter]], length: 30 },
+    { id: 'north', cableType: 'NYY 3 x 16', coords: [[0, 0], [30 * meter, 0]], length: 30 }
+  ];
+  const first = analyzeCircuit(lines, []);
+  const second = analyzeCircuit(lines, []);
+  const westRecord = first.physicalSegmentRecords.find(segment => segment.lineId === 'west');
+  const westEdge = first.topology.edges.find(edge => edge.segmentKey === westRecord.segmentKey);
+  const westBranch = first.topology.branches.find(branch => branch.edgeIds.includes(westEdge.edgeId));
+  const westAnalysisSegment = first.analysisSegmentIndicators.analysisSegments.find(segment => segment.edgeIds.includes(westEdge.edgeId));
+
+  assert.equal(westRecord.calibreLabel, 'NYY 3X10');
+  assert.equal(westEdge.calibreLabel, 'NYY 3X10');
+  assert.equal(westBranch.calibreLabel, 'NYY 3X10');
+  assert.equal(westAnalysisSegment.calibreLabel, 'NYY 3X10');
+  assert.equal(first.analysisSegmentIndicators.totalAnalysisSegments, 2);
+  assert.deepEqual(second, first);
+});
+
+test('segment inspection includes the resolved cable calibre label', () => {
+  const source = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
+  assert.match(source, /getLineCalibreDisplay\(line, entryCableGroups\)/);
+  assert.match(source, /Calibre \/ Tipo de cable:/);
 });
 
 async function projectWithCroquis(linkCroquis) {

@@ -119,8 +119,10 @@ export default function ProjectPanel({
         : await parseAndValidateProjectInputText(text);
       setPhase('validated');
       setResult({ ...parsed, sizeBytes, sourceName });
-      if (parsed.valid && parsed.inputKind === 'GEOPLUZ_PROJECT') {
+      if (parsed.valid && parsed.inputKind === 'GEOPLUZ_PROJECT' && !isLocalWorkspace) {
         await checkMainDatabaseForProject();
+      } else if (parsed.valid && parsed.inputKind === 'GEOPLUZ_PROJECT') {
+        setDatabaseState({ phase: 'local-only', counts: null, error: '' });
       } else if (parsed.valid) {
         setDatabaseState({ phase: 'legacy', counts: null, error: '' });
       }
@@ -167,11 +169,11 @@ export default function ProjectPanel({
     await processProjectText(text, new Blob([text]).size, 'Texto pegado');
   };
 
-  const handleOpen = async () => {
+  const handleOpen = async ({ editable = false } = {}) => {
     if (!result?.valid) return;
     setPhase('loading');
     try {
-      await onOpenLocalProject(result.project, result);
+      await onOpenLocalProject(result.project, result, { editable });
       await closeModal({ force: true });
     } catch (error) {
       setPhase('error');
@@ -280,15 +282,20 @@ export default function ProjectPanel({
     }
   };
 
-  const isLocal = dataSource?.kind === 'LOCAL_PROJECT';
+  const isLocal = dataSource?.kind === 'LOCAL_PROJECT' || dataSource?.kind === 'LOCAL_WORKSPACE';
+  const isLocalWorkspace = dataSource?.kind === 'LOCAL_WORKSPACE';
   const preview = result?.preview;
 
   return (
     <>
       <details className="sidebar-section" open>
-        <summary><span><i className="fa-solid fa-box-archive"></i> Proyecto</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+        <summary><span><i className="fa-solid fa-box-archive"></i> Proyectos</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block project-actions">
           <div className="card-title"><i className="fa-solid fa-diagram-project"></i> Proyecto completo</div>
+          {isLocal && <div className={`project-local-mode ${isLocalWorkspace ? 'is-editable' : ''}`}>
+            <i className={`fa-solid ${isLocalWorkspace ? 'fa-file-pen' : 'fa-file-shield'}`}></i>
+            <span>{isLocalWorkspace ? 'Copia editable local' : 'Proyecto local en consulta'}</span>
+          </div>}
           <button className="btn btn-green" onClick={onDownloadProject} disabled={!hasData}>
             <i className="fa-solid fa-download"></i> Descargar proyecto
           </button>
@@ -297,18 +304,18 @@ export default function ProjectPanel({
           </button>
           {isLocal && (
             <>
-              <button className="btn btn-orange" onClick={handlePrepareActiveLocalProject}>
+              {!isLocalWorkspace && <button className="btn btn-orange" onClick={handlePrepareActiveLocalProject}>
                 <i className="fa-solid fa-arrows-rotate"></i> Reemplazar Base Principal por este proyecto
-              </button>
+              </button>}
               <button className="btn btn-outline" onClick={onCloseLocalProject}>
                 <i className="fa-solid fa-cloud-arrow-left"></i> Cerrar proyecto local
               </button>
             </>
           )}
-          <button className="btn btn-outline project-delete-button" onClick={openDeleteDialog}>
+          {!isLocal && <button className="btn btn-outline project-delete-button" onClick={openDeleteDialog}>
             <i className="fa-solid fa-trash-can"></i> Borrar proyecto actual
-          </button>
-          <p className="project-help">Abrir un proyecto solo lo carga localmente. No importa ni modifica datos en Supabase.</p>
+          </button>}
+          <p className="project-help">Puedes abrir un proyecto en consulta o como copia editable. La copia editable se guarda solo en este navegador y no modifica Supabase; descárgala para llevarla a otra computadora.</p>
         </div>
       </details>
 
@@ -379,6 +386,7 @@ export default function ProjectPanel({
                 </div>}
                 {result.valid && databaseState.phase === 'error' && <div className="project-database-state is-blocked"><strong>No se pudo habilitar la importación</strong><p>{databaseState.error}</p></div>}
                 {result.valid && databaseState.phase === 'legacy' && <div className="project-database-state is-blocked"><p>Una exportación legacy puede abrirse localmente, pero no importarse como proyecto completo.</p></div>}
+                {result.valid && databaseState.phase === 'local-only' && <div className="project-database-state is-empty"><strong>Espacio de trabajo local</strong><p>Este proyecto se abrirá sin preparar staging ni modificar Supabase.</p></div>}
                 {lifecycleError && <div className="project-validation-errors" role="alert"><strong>Operación de proyecto detenida</strong><p>{lifecycleError}</p></div>}
                 {result.valid && ['empty', 'blocked'].includes(databaseState.phase) && !staging && <button className="btn btn-orange" onClick={handlePrepareStaging} disabled={phase === 'staging'}>
                   <i className="fa-solid fa-layer-group"></i> {databaseState.phase === 'empty' ? 'Preparar importación segura en staging' : 'Preparar reemplazo seguro en staging'}
@@ -414,8 +422,9 @@ export default function ProjectPanel({
                     <button className="btn btn-outline" onClick={handleDiscardPreparedStaging} disabled={phase === 'finalizing'}>Cancelar y descartar staging</button>
                   </div>
                 </div>}
-                {result.valid && <div className="project-final-actions">
-                  <button className="btn btn-green" onClick={handleOpen} disabled={Boolean(staging) || ['loading', 'staging', 'finalizing'].includes(phase)}><i className="fa-solid fa-eye"></i> {phase === 'loading' ? ' Abriendo…' : ' Abrir localmente'}</button>
+                {result.valid && <div className="project-final-actions project-open-mode-actions">
+                  <button className="btn btn-outline" onClick={() => handleOpen({ editable: false })} disabled={Boolean(staging) || ['loading', 'staging', 'finalizing'].includes(phase)}><i className="fa-solid fa-eye"></i> {phase === 'loading' ? ' Abriendo…' : ' Abrir en consulta'}</button>
+                  <button className="btn btn-green" onClick={() => handleOpen({ editable: true })} disabled={Boolean(staging) || ['loading', 'staging', 'finalizing'].includes(phase)}><i className="fa-solid fa-file-pen"></i> {phase === 'loading' ? ' Abriendo…' : ' Abrir copia editable'}</button>
                   <button className="btn btn-outline" onClick={() => closeModal()} disabled={['staging', 'finalizing', 'cleanup'].includes(phase)}>Cancelar</button>
                 </div>}
               </div>

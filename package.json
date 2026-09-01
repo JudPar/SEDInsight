@@ -11,7 +11,9 @@
     "test:project": "node tests/projectArchitecture.test.mjs",
     "test:project-import": "node tests/projectImport.test.mjs",
     "test:project-lifecycle": "node tests/projectLifecycle.test.mjs",
-    "test:project-fidelity": "node tests/projectFidelity.test.mjs"
+    "test:project-fidelity": "node tests/projectFidelity.test.mjs",
+    "test:sed-overview": "node tests/sedOverview.test.mjs",
+    "test:report-export": "node tests/reportExport.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.0",

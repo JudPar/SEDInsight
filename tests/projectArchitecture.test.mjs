@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { SEDS_CACHE_KEY, clearExpectedLocalProject, getExpectedLocalProject, getLocalProjectCacheKey, markLocalProjectExpected } from '../lib/dbCache.js';
 import { isLegacyNetworkJson, parseProjectJson, ProjectParseError } from '../lib/projectFormat.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
@@ -154,9 +155,20 @@ test('local-project source marker is explicit and can be cleared before returnin
     getItem: key => values.get(key) ?? null,
     removeItem: key => values.delete(key)
   };
-  assert.equal(markLocalProjectExpected({ project: { id: 'local-1', name: 'Proyecto local 1' } }), true);
-  assert.deepEqual(getExpectedLocalProject(), { projectId: 'local-1', projectName: 'Proyecto local 1' });
+  assert.equal(markLocalProjectExpected({ project: { id: 'local-1', name: 'Proyecto local 1' } }, { editable: true }), true);
+  assert.deepEqual(getExpectedLocalProject(), { projectId: 'local-1', projectName: 'Proyecto local 1', editable: true });
   clearExpectedLocalProject();
   assert.equal(getExpectedLocalProject(), null);
   delete globalThis.sessionStorage;
+});
+
+test('editable local workspace is exposed without enabling Supabase write paths', () => {
+  const pageSource = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const panelSource = readFileSync(new URL('../components/ProjectPanel.js', import.meta.url), 'utf8');
+  assert.match(pageSource, /const isLocalWorkspace = dataSource\.kind === 'LOCAL_WORKSPACE'/);
+  assert.match(pageSource, /if \(isLocalWorkspace\) return points;/);
+  assert.match(pageSource, /async function saveFallaToSupabase[\s\S]*?if \(!isSupabaseSource\) return;/);
+  assert.match(pageSource, /async function saveSedsToSupabase[\s\S]*?if \(!isSupabaseSource\) return;/);
+  assert.match(panelSource, /Abrir copia editable/);
+  assert.match(panelSource, /!isLocalWorkspace && <button[\s\S]*?Reemplazar Base Principal/);
 });

@@ -30,6 +30,8 @@ export default function Sidebar({
   setCurrentSedId,
   currentLlaveId,
   setCurrentLlaveId,
+  showFullSedView,
+  onToggleFullSedView,
   currentTheme,
   setCurrentTheme,
   currentMapStyle,
@@ -38,6 +40,7 @@ export default function Sidebar({
   setIsAddPointMode,
   isPresentationMode,
   isEditable,
+  canSyncToMainDatabase,
   circuitNote,
   cableGroups,
   circuitStatus,
@@ -294,10 +297,10 @@ export default function Sidebar({
               className="btn btn-cyan" 
               style={{ marginTop: '8px' }}
               onClick={onSaveToMainDatabase}
-              disabled={!isEditable}
-              title="Sincroniza los cambios con la Base de Datos Principal en Supabase"
+              disabled={!canSyncToMainDatabase}
+              title={canSyncToMainDatabase ? 'Sincroniza los cambios con la Base de Datos Principal en Supabase' : 'La copia editable local no escribe en Supabase; descárgala desde Proyectos'}
             >
-              <i className="fa-solid fa-cloud-arrow-up"></i> ☁️ Guardar en Base Principal (Nube)
+              <i className={`fa-solid ${canSyncToMainDatabase ? 'fa-cloud-arrow-up' : 'fa-download'}`}></i> {canSyncToMainDatabase ? '☁️ Guardar en Base Principal (Nube)' : 'Guardar copia desde Proyectos'}
             </button>
           )}
 
@@ -398,6 +401,15 @@ export default function Sidebar({
               )}
             </div>
           </div>
+          <button
+            className="btn btn-outline"
+            style={{ marginTop: '-2px', marginBottom: '8px' }}
+            disabled={!currentSedId || currentLlaves.length === 0}
+            onClick={onToggleFullSedView}
+          >
+            <i className={`fa-solid ${showFullSedView ? 'fa-map-location-dot' : 'fa-layer-group'}`}></i>{' '}
+            {showFullSedView ? 'Ver solo llave' : 'Ver SED completa'}
+          </button>
 
           {currentMasterSed && (
             <div style={{ marginTop: '10px', padding: '8px 10px', background: 'rgba(0,119,194,0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '11px' }}>
@@ -428,6 +440,11 @@ export default function Sidebar({
             <button className="btn btn-cyan" disabled={!currentLlaveId} onClick={onAnalyzeCircuit}>
               <i className="fa-solid fa-chart-column"></i> Analizar circuito
             </button>
+            {showFullSedView && currentLlaveId && (
+              <div style={{ marginTop: '6px', fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                Análisis: {currentLlaveId}
+              </div>
+            )}
             {circuitPhase1Analysis && (
               <div style={{ marginTop: '8px', padding: '8px 9px', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '10.5px', lineHeight: 1.45 }}>
                 <div style={{ fontWeight: 700, color: 'var(--accent-cyan)', marginBottom: '5px' }}>Resultado del circuito seleccionado</div>

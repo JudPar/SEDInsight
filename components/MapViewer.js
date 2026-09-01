@@ -5,6 +5,7 @@ import { fixCoord, getWeightForZoom } from '@/lib/coordUtils';
 import { TILE_LAYERS, MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, FAULT_CAUSES, DEFAULT_CAUSE_COLOR, getCauseCategory } from '@/lib/constants';
 import { getSpiderfyPositions, groupOverlappingPoints } from '@/lib/overlappingMarkers';
 import { safeExternalImageSource, safeExternalNavigationUrl } from '@/lib/externalAssetSafety';
+import { getLineCalibreDisplay } from '@/lib/circuitAnalysis';
 
 const ANALYSIS_SELECTION_MAX_ZOOM = 19;
 
@@ -29,6 +30,9 @@ const MapViewer = forwardRef(({
   currentMapStyle,
   circuitId,
   llaveData,
+  sedOverviewLlaves = [],
+  showFullSedView = false,
+  selectedLlaveId = '',
   sedId,
   sedCoord,
   faultPoints,
@@ -66,6 +70,7 @@ const MapViewer = forwardRef(({
   const focusRequestRef = useRef(0);
   const fittedCircuitRef = useRef(null);
   const fittedAnalysisSegmentRef = useRef(null);
+  const visibleNetworkBoundsRef = useRef([]);
   const [sedsMasterDB, setSedsMasterDB] = useState({});
   const [mapViewport, setMapViewport] = useState({ bounds: null, zoom: MAP_DEFAULT_ZOOM });
   const [showLegend, setShowLegend] = useState(true);
@@ -142,6 +147,36 @@ const MapViewer = forwardRef(({
     window.setTimeout(afterFly, 1400);
   }, []);
 
+  const prepareForExport = useCallback(() => new Promise((resolve) => {
+    const map = mapInstanceRef.current;
+    const L = LRef.current;
+    const coordinates = visibleNetworkBoundsRef.current;
+    if (!map || !L || !Array.isArray(coordinates) || coordinates.length === 0) {
+      resolve(false);
+      return;
+    }
+    const bounds = L.latLngBounds(coordinates);
+    if (!bounds.isValid()) {
+      resolve(false);
+      return;
+    }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      map.off('moveend', finish);
+      window.setTimeout(() => {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve(true)));
+      }, 250);
+    };
+
+    map.invalidateSize({ pan: false });
+    map.once('moveend', finish);
+    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18, animate: false });
+    window.setTimeout(finish, 450);
+  }), []);
+
   useImperativeHandle(ref, () => ({
     flyTo: (coords, zoom) => {
       if (mapInstanceRef.current) {
@@ -150,6 +185,7 @@ const MapViewer = forwardRef(({
     },
     focusFailure,
     flyToPoint: focusFailure,
+    prepareForExport,
     invalidateSize: () => {
       if (mapInstanceRef.current) {
         mapInstanceRef.current.invalidateSize();
@@ -160,7 +196,7 @@ const MapViewer = forwardRef(({
         mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] });
       }
     }
-  }), [focusFailure]);
+  }), [focusFailure, prepareForExport]);
 
   useEffect(() => {
     if (!isPresentationMode || !mapRef.current) {
@@ -290,45 +326,64 @@ const MapViewer = forwardRef(({
     networkGroup.clearLayers();
 
     const bounds = [];
+    visibleNetworkBoundsRef.current = [];
 
-    if (llaveData && llaveData.lines && llaveData.lines.length > 0) {
+    const networkLlaves = showFullSedView
+      ? sedOverviewLlaves
+      : llaveData ? [{
+        llaveId: selectedLlaveId,
+        name: llaveData.name || selectedLlaveId,
+        lines: llaveData.lines || [],
+        cableGroups,
+        color: null,
+        isSelected: true
+      }] : [];
+
+    if (networkLlaves.some(entry => entry.lines.length > 0)) {
       const lineColor = currentTheme === 'dark' ? '#00e5ff' : '#0077c2';
       const zoom = mapInstanceRef.current.getZoom();
       const weight = getWeightForZoom(zoom);
       const analysisSegmentActive = hasSelectedAnalysisSegment && selectedAnalysisSegmentEdges.length > 0;
 
-      llaveData.lines.forEach((line, index) => {
-        if (line.coords && line.coords.length > 0) {
-          const fixedCoords = line.coords.map(c => fixCoord(c));
-          const lineId = String(line.id ?? index);
-          const cableGroup = cableGroups.find(group => group.lineIds?.map(String).includes(lineId));
-          const isSelected = selectedLineIds.includes(lineId);
+      networkLlaves.forEach((entry) => {
+        entry.lines.forEach((line, index) => {
+          if (line.coords && line.coords.length > 0) {
+            const fixedCoords = line.coords.map(c => fixCoord(c));
+            const lineId = String(line.id ?? index);
+            const entryCableGroups = entry.cableGroups || [];
+            const cableGroup = entryCableGroups.find(group => group.lineIds?.map(String).includes(lineId));
+            const calibreDisplay = getLineCalibreDisplay(line, entryCableGroups);
+            const isSelected = entry.isSelected && selectedLineIds.includes(lineId);
+            const baseColor = showFullSedView ? entry.color : (cableGroup?.color || lineColor);
+            const baseWeight = showFullSedView && entry.isSelected ? weight + 1.5 : cableGroup && !showFullSedView ? weight + 1.5 : weight;
 
-          const polyline = L.polyline(fixedCoords, {
-            color: isSelected ? '#ffca28' : (cableGroup?.color || lineColor),
-            weight: isSelected ? weight + 3 : (cableGroup ? weight + 1.5 : weight),
-            opacity: isSelected ? 1 : (analysisSegmentActive ? 0.2 : 0.9)
-          }).addTo(networkGroup);
+            const polyline = L.polyline(fixedCoords, {
+              color: isSelected ? '#ffca28' : baseColor,
+              weight: isSelected ? weight + 3 : baseWeight,
+              opacity: isSelected ? 1 : (analysisSegmentActive ? 0.2 : (showFullSedView ? (entry.isSelected ? 0.95 : 0.72) : 0.9))
+            }).addTo(networkGroup);
 
-          if (isSegmentSelectionMode) {
-            polyline.on('click', (event) => {
-              L.DomEvent.stopPropagation(event);
-              onLineClick?.(line.id ?? index);
-            });
+            if (isSegmentSelectionMode && entry.isSelected) {
+              polyline.on('click', (event) => {
+                L.DomEvent.stopPropagation(event);
+                onLineClick?.(line.id ?? index);
+              });
+            }
+
+            if (line.id || line.length) {
+              polyline.bindTooltip(`
+                <div style="font-size:11px;">
+                  <b>Circuito:</b> ${escapeHtml(entry.name || entry.llaveId || 'Llave')}<br>
+                  <b>Longitud:</b> ${escapeHtml(line.length || 0)} m<br>
+                  <b>ID Tramo:</b> ${escapeHtml(line.id || 'N/A')}<br>
+                  <b>Calibre / Tipo de cable:</b> ${escapeHtml(calibreDisplay)}
+                </div>
+              `, { sticky: true });
+            }
+
+            fixedCoords.forEach(c => bounds.push(c));
           }
-
-          if (line.id || line.length) {
-            polyline.bindTooltip(`
-              <div style="font-size:11px;">
-                <b>Circuito:</b> ${escapeHtml(llaveData.name || 'Llave')}<br>
-                <b>Longitud:</b> ${escapeHtml(line.length || 0)} m<br>
-                <b>ID Tramo:</b> ${escapeHtml(line.id || 'N/A')}
-              </div>
-            `, { sticky: true });
-          }
-
-          fixedCoords.forEach(c => bounds.push(c));
-        }
+        });
       });
 
       if (analysisSegmentActive) {
@@ -419,13 +474,15 @@ const MapViewer = forwardRef(({
       bounds.push(fixedSedCoord);
     }
 
+    visibleNetworkBoundsRef.current = bounds.map(coordinate => [...coordinate]);
+
     // Centrar y enfocar automáticamente el mapa a los límites de la Llave seleccionada
     // No reencuadrar cuando cambia solo el resaltado de una selección: conserva el zoom del usuario.
     if (bounds.length > 0 && mapInstanceRef.current && fittedCircuitRef.current !== circuitId) {
       mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 18, animate: true });
       fittedCircuitRef.current = circuitId;
     }
-  }, [llaveData, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, selectedAnalysisSegmentEdges, hasSelectedAnalysisSegment, onLineClick, isPresentationMode, isEditable, circuitId]);
+  }, [llaveData, sedOverviewLlaves, showFullSedView, selectedLlaveId, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, selectedAnalysisSegmentEdges, hasSelectedAnalysisSegment, onLineClick, isPresentationMode, isEditable, circuitId]);
 
   useEffect(() => {
     if (!selectedAnalysisSegmentId) {
@@ -697,7 +754,33 @@ const MapViewer = forwardRef(({
         </div>
       )}
 
-      {!hideOverlays && cableGroups.length > 0 && (
+      {!hideOverlays && showFullSedView && sedOverviewLlaves.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: isPresentationMode ? '78px' : (circuitNote ? '120px' : '14px'),
+          right: '14px',
+          zIndex: 1000,
+          maxWidth: '280px',
+          maxHeight: '38vh',
+          overflowY: 'auto',
+          padding: '9px 11px',
+          borderRadius: '8px',
+          background: currentTheme === 'dark' ? 'rgba(18,25,44,.94)' : 'rgba(255,255,255,.96)',
+          color: currentTheme === 'dark' ? '#e0f7fa' : '#1a202c',
+          border: `1px solid ${currentTheme === 'dark' ? 'rgba(0,229,255,.3)' : '#cbd5e0'}`,
+          fontSize: '10.5px'
+        }}>
+          <div style={{ fontWeight: 700, marginBottom: '6px' }}>Llaves de la SED</div>
+          {sedOverviewLlaves.map(entry => (
+            <div key={entry.llaveId} style={{ display: 'flex', gap: '7px', alignItems: 'center', marginTop: '4px', fontWeight: entry.isSelected ? 700 : 400 }}>
+              <span style={{ width: 14, height: entry.isSelected ? 5 : 4, background: entry.color, borderRadius: 2 }}></span>
+              <span>{entry.llaveId}{entry.isSelected ? ' · seleccionada' : ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!hideOverlays && !showFullSedView && cableGroups.length > 0 && (
         <div style={{
           position: 'absolute',
           top: isPresentationMode ? '78px' : (circuitNote ? '120px' : '14px'),

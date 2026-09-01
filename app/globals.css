@@ -257,7 +257,7 @@ select.input-control option {
 .data-source-badge {
   position: fixed;
   z-index: 10040;
-  top: 48px;
+  top: 76px;
   right: 12px;
   display: flex;
   align-items: center;
@@ -274,10 +274,18 @@ select.input-control option {
 
 .dark-theme .data-source-badge { background: rgba(18, 25, 44, .96); color: #b2ebf2; }
 .data-source-badge.is-local { border-color: #ff9800; color: #9a5200; }
+.data-source-badge.is-editable-local { border-color: #2e7d32; color: #1b5e20; }
 .dark-theme .data-source-badge.is-local { color: #ffcc80; }
+.dark-theme .data-source-badge.is-editable-local { color: #81c784; }
 .data-source-badge button { border: 0; background: transparent; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
 
 .project-actions { display: grid; gap: 7px; }
+.project-local-mode { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid rgba(255, 152, 0, .55); border-radius: 6px; color: #9a5200; background: rgba(255, 152, 0, .08); font-size: 10.5px; font-weight: 700; }
+.project-local-mode.is-editable { border-color: rgba(46, 125, 50, .55); color: #1b5e20; background: rgba(46, 125, 50, .08); }
+.dark-theme .project-local-mode { color: #ffcc80; }
+.dark-theme .project-local-mode.is-editable { color: #81c784; }
+.project-open-mode-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.project-open-mode-actions > :last-child { grid-column: 1 / -1; }
 .project-help { margin: 2px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
 .project-open-backdrop { z-index: 10020; }
 .project-open-modal { width: min(720px, calc(100vw - 28px)); max-height: 92vh; overflow-y: auto; }
@@ -664,6 +672,7 @@ body.dark-theme .hud-edit-btn { color: #ffab00; }
 }
 
 @media (max-width: 720px) {
+  .data-source-badge { top: 112px; right: 10px; max-width: calc(100vw - 20px); }
   .project-final-actions { grid-template-columns: 1fr; }
   .project-replacement-comparison { grid-template-columns: 1fr; }
   body { display: block; }
