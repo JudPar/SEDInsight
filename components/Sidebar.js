@@ -3,6 +3,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import FaultTable from './FaultTable';
 import ProjectPanel from './ProjectPanel';
+import DataManagementPanel from './DataManagementPanel';
 import SearchableSedSelect, { sortSedIds } from './SearchableSedSelect';
 import { CIRCUIT_STATUSES } from '@/lib/circuitAnalysis';
 import { describeParetoCandidates } from '@/lib/branchIndicators';
@@ -89,7 +90,23 @@ export default function Sidebar({
   onDiscardStaging,
   onFinalizeProject,
   onDeleteMainProject,
-  onCloseLocalProject
+  onCloseLocalProject,
+  faultPeriods,
+  selectedPeriodKeys,
+  onChangeSelectedPeriods,
+  sedFaultRanking,
+  periodSupport,
+  onImportMonthly,
+  onDeletePeriod,
+  compensationRows,
+  onImportCompensation,
+  onDeleteCompensationPeriod,
+  workProjects,
+  onSaveWorkProject,
+  onOpenWorkProject,
+  onDeleteWorkProject,
+  onCopySedLink,
+  sedLinkFeedback
 }) {
   const jsonInputRef = useRef(null);
   const excelInputRef = useRef(null);
@@ -248,6 +265,28 @@ export default function Sidebar({
           onMajorOverlayChange={onMajorOverlayChange}
         />
 
+        <DataManagementPanel
+          seds={seds}
+          faultPoints={faultPoints}
+          periods={faultPeriods}
+          selectedPeriodKeys={selectedPeriodKeys}
+          onChangeSelectedPeriods={onChangeSelectedPeriods}
+          ranking={sedFaultRanking}
+          onSelectSed={setCurrentSedId}
+          periodSupport={periodSupport}
+          onImportMonthly={onImportMonthly}
+          onDeletePeriod={onDeletePeriod}
+          compensationRows={compensationRows}
+          onImportCompensation={onImportCompensation}
+          onDeleteCompensationPeriod={onDeleteCompensationPeriod}
+          workProjects={workProjects}
+          onSaveWorkProject={onSaveWorkProject}
+          onOpenWorkProject={onOpenWorkProject}
+          onDeleteWorkProject={onDeleteWorkProject}
+          localProjects={localProjects}
+          onRemoveLocalProject={onRemoveLocalProject}
+        />
+
         {/* Ocultos */}
         <input 
           type="file" 
@@ -266,10 +305,10 @@ export default function Sidebar({
         />
 
         <details className="sidebar-section">
-          <summary><span><i className="fa-solid fa-file-arrow-up"></i> 1. Carga de registros</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+          <summary><span><i className="fa-solid fa-file-arrow-up"></i> Datos temporales locales</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
           <div className="card-title">
-            <i className="fa-solid fa-layer-group"></i> Carga y fusión de JSON
+            <i className="fa-solid fa-layer-group"></i> Importar datos temporales
           </div>
           <div className="form-group">
             <label>Estado de Base Local Acumulada:</label>
@@ -295,7 +334,7 @@ export default function Sidebar({
               disabled={!isEditable}
               title="Pegar el texto/código del JSON directamente (si los archivos están bloqueados)"
             >
-              <i className="fa-solid fa-paste"></i> Pegar JSON
+              <i className="fa-solid fa-paste"></i> Pegar JSON local
             </button>
           </div>
           {hasData && (
@@ -416,6 +455,9 @@ export default function Sidebar({
             <i className={`fa-solid ${showFullSedView ? 'fa-map-location-dot' : 'fa-layer-group'}`}></i>{' '}
             {showFullSedView ? 'Ver solo llave' : 'Ver SED completa'}
           </button>
+          {currentSedId && <button className="btn btn-outline" style={{ marginBottom: '8px' }} onClick={onCopySedLink}>
+            <i className="fa-solid fa-link"></i>{' '}{sedLinkFeedback || 'Copiar enlace de SED'}
+          </button>}
 
           {currentMasterSed && (
             <div style={{ marginTop: '10px', padding: '8px 10px', background: 'rgba(0,119,194,0.08)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '11px' }}>

@@ -51,7 +51,9 @@ const MapViewer = forwardRef(({
   onSedDragEnd,
   onPointClick,
   onLineClick,
-  hideOverlays = false
+  hideOverlays = false,
+  sedPeriodSummary = null,
+  selectedPeriodLabel = ''
 }, ref) => {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -712,6 +714,23 @@ const MapViewer = forwardRef(({
   return (
     <div className={`map-viewer ${isPresentationMode ? 'is-presentation' : 'is-editing'}`} style={{ position: 'relative', width: '100%', height: '100%', '--zoom-control-bottom': `${zoomControlBottom}px` }}>
       <div id="map" ref={mapRef} style={{ width: '100%', height: '100%' }}></div>
+
+      {!hideOverlays && sedId && sedPeriodSummary && (
+        <div className="sed-period-summary-overlay" style={{
+          position: 'absolute', right: '14px', bottom: '92px', zIndex: 1000,
+          padding: '9px 11px', borderRadius: '8px', minWidth: '185px',
+          background: currentTheme === 'dark' ? 'rgba(18,25,44,.94)' : 'rgba(255,255,255,.96)',
+          color: currentTheme === 'dark' ? '#e0f7fa' : '#1a202c',
+          border: `1px solid ${currentTheme === 'dark' ? 'rgba(0,229,255,.3)' : '#cbd5e0'}`,
+          fontSize: '10.5px', lineHeight: 1.5
+        }}>
+          <b>SED {sedId}</b>
+          <div>{selectedPeriodLabel}</div>
+          <div>Fallas: <strong>{sedPeriodSummary.faultCount}</strong></div>
+          <div>Llamadas: <strong>{sedPeriodSummary.callDataAvailable ? sedPeriodSummary.callCount : 'Sin dato'}</strong>{sedPeriodSummary.callDataAvailable && !sedPeriodSummary.callDataComplete ? ' · parcial' : ''}</div>
+          <div>Compensación: <strong>{sedPeriodSummary.compensationDataAvailable ? `S/ ${sedPeriodSummary.compensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}` : 'Sin dato'}</strong>{sedPeriodSummary.compensationDataAvailable && !sedPeriodSummary.compensationDataComplete ? ' · parcial' : ''}</div>
+        </div>
+      )}
 
       {!hideOverlays && circuitNote && (
         <div style={{

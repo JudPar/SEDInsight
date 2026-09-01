@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import { usePathname, useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import Sidebar from '@/components/Sidebar';
 import FaultForm from '@/components/FaultForm';
@@ -13,7 +14,7 @@ import { sortSedIds } from '@/components/SearchableSedSelect';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
-import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, markLocalProjectExpected, removeLocalProject, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
+import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, listLocalWorkProjectConfigs, markLocalProjectExpected, removeLocalProject, removeLocalWorkProjectConfig, saveLocalWorkProjectConfig, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
 import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
@@ -22,6 +23,10 @@ import { createProjectDocument, projectToInternalModel } from '@/lib/projectMapp
 import { validateProject } from '@/lib/projectValidation';
 import { createSupabaseProjectRepository, getMainDatabaseState } from '@/lib/projectImport';
 import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging, finalizeStagedProject, stageProject } from '@/lib/projectStaging';
+import { deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, isMonthlyPeriodKey, selectRecentPeriods, summarizePeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
+import { buildSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
+import { buildSedPath, buildSedUrl, normalizeSedIdParam, resolveSedDeepLink } from '@/lib/sedLinks';
+import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
 import {
   COORD_SOURCE,
   coordinatePairsEqual,
@@ -36,21 +41,8 @@ import {
 // MapViewer importado dinámicamente para evitar SSR
 const MapViewer = dynamic(() => import('@/components/MapViewer'), { ssr: false });
 
-function mapSupabaseRowsToProjectState(sedsData = [], llavesData = [], fallasData = []) {
-  const database = {};
-  sedsData.forEach(sed => {
-    database[sed.id] = {
-      id: sed.id,
-      name: sed.name,
-      sedCoord: sed.sed_coord,
-      createdAt: sed.created_at || null,
-      llaves: {}
-    };
-  });
-  llavesData.forEach(llave => {
-    if (database[llave.sed_id]) database[llave.sed_id].llaves[llave.llave_code] = hydrateLlave(llave);
-  });
-  const faults = fallasData.map((falla, index) => ({
+function mapSupabaseFaultRows(fallasData = []) {
+  return fallasData.map((falla, index) => ({
     id: falla.id,
     number: index + 1,
     coords: isValidCoordinatePair(falla) ? [falla.latitud, falla.longitud] : null,
@@ -73,8 +65,28 @@ function mapSupabaseRowsToProjectState(sedsData = [], llavesData = [], fallasDat
     fotos: falla.fotos || [],
     coordSource: falla.coord_source || null,
     coordLookupSuministro: falla.coord_lookup_suministro || null,
-    createdAt: falla.created_at || null
+    createdAt: falla.created_at || null,
+    periodKey: falla.period_key || null,
+    sourceRecordId: falla.source_record_id || null,
+    callCount: falla.call_count ?? null
   }));
+}
+
+function mapSupabaseRowsToProjectState(sedsData = [], llavesData = [], fallasData = []) {
+  const database = {};
+  sedsData.forEach(sed => {
+    database[sed.id] = {
+      id: sed.id,
+      name: sed.name,
+      sedCoord: sed.sed_coord,
+      createdAt: sed.created_at || null,
+      llaves: {}
+    };
+  });
+  llavesData.forEach(llave => {
+    if (database[llave.sed_id]) database[llave.sed_id].llaves[llave.llave_code] = hydrateLlave(llave);
+  });
+  const faults = mapSupabaseFaultRows(fallasData);
   return { database, faults };
 }
 
@@ -91,7 +103,10 @@ function downloadProjectFile(project) {
   URL.revokeObjectURL(url);
 }
 
-export default function Page() {
+export default function Page({ requestedSedId = '', isSedRoute = false }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const normalizedRequestedSedId = normalizeSedIdParam(requestedSedId);
   // Estado de Datos
   const [localDatabase, setLocalDatabase] = useState({});
   const [numberedPointsList, setNumberedPointsList] = useState([]);
@@ -121,6 +136,18 @@ export default function Page() {
   const [activeMajorOverlays, setActiveMajorOverlays] = useState(() => new Set());
   const [dataSource, setDataSource] = useState({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
   const [localProjectCatalog, setLocalProjectCatalog] = useState([]);
+  const [faultPeriods, setFaultPeriods] = useState([]);
+  const [selectedPeriodKeys, setSelectedPeriodKeys] = useState([]);
+  const [periodSupport, setPeriodSupport] = useState(false);
+  const [sedMonthlyMetrics, setSedMonthlyMetrics] = useState([]);
+  const [workProjects, setWorkProjects] = useState([]);
+  const [activeWorkSedIds, setActiveWorkSedIds] = useState([]);
+  const [mainDataLoaded, setMainDataLoaded] = useState(false);
+  const [deepLinkResolved, setDeepLinkResolved] = useState(!isSedRoute);
+  const [deepLinkNotice, setDeepLinkNotice] = useState('');
+  const [sedLinkFeedback, setSedLinkFeedback] = useState('');
+  const periodLoadRequestRef = useRef(0);
+  const copyFeedbackTimeoutRef = useRef(null);
 
   // Estado del Formulario
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -163,9 +190,14 @@ export default function Page() {
   }, [currentTheme]);
 
   async function initializeData() {
+    if (isSedRoute) {
+      await loadSupabaseData();
+      return;
+    }
     const expectedLocalProject = getExpectedLocalProject();
-    const [activeLocalProject, catalog] = await Promise.all([getActiveLocalProjectState(), listLocalProjects()]);
+    const [activeLocalProject, catalog, localWorkProjects] = await Promise.all([getActiveLocalProjectState(), listLocalProjects(), listLocalWorkProjectConfigs()]);
     setLocalProjectCatalog(catalog);
+    setWorkProjects(localWorkProjects);
     if (activeLocalProject?.project) {
       const validation = await validateProject(activeLocalProject.project);
       if (validation.valid) {
@@ -185,7 +217,39 @@ export default function Page() {
   }
 
   // Carga de Datos desde IndexedDB Caché / Supabase
-  async function loadSupabaseData({ skipCache = false } = {}) {
+  async function fetchSupabaseFaultsForPeriods(periodKeys, supportsPeriods) {
+    if (!supabase) return [];
+    if (!supportsPeriods) {
+      const { data, error } = await supabase.from('fallas').select('*').order('id', { ascending: true }).range(0, 99999);
+      if (error) throw error;
+      return mapSupabaseFaultRows(data || []);
+    }
+    const monthlyKeys = [...new Set((periodKeys || []).filter(key => key !== UNASSIGNED_PERIOD_KEY))];
+    const requests = [];
+    if (monthlyKeys.length) requests.push(supabase.from('fallas').select('*').in('period_key', monthlyKeys).order('id', { ascending: true }).range(0, 99999));
+    if ((periodKeys || []).includes(UNASSIGNED_PERIOD_KEY)) requests.push(supabase.from('fallas').select('*').is('period_key', null).order('id', { ascending: true }).range(0, 99999));
+    if (!requests.length) return [];
+    const results = await Promise.all(requests);
+    const failed = results.find(result => result.error);
+    if (failed?.error) throw failed.error;
+    const rows = results.flatMap(result => result.data || []).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    return mapSupabaseFaultRows(rows);
+  }
+
+  async function handleChangeSelectedPeriods(nextPeriodKeys) {
+    const normalized = [...new Set(nextPeriodKeys || [])];
+    setSelectedPeriodKeys(normalized);
+    if (!isSupabaseSource || !periodSupport) return;
+    const requestId = ++periodLoadRequestRef.current;
+    try {
+      const points = await fetchSupabaseFaultsForPeriods(normalized, true);
+      if (requestId === periodLoadRequestRef.current) setNumberedPointsList(points);
+    } catch (error) {
+      if (requestId === periodLoadRequestRef.current) alert(`No se pudieron cargar los periodos seleccionados: ${error?.message || 'error desconocido'}`);
+    }
+  }
+
+  async function loadSupabaseData({ skipCache = false, preservePeriodSelection = false } = {}) {
     // 1. Intentar cargar SEDS & Llaves desde caché IndexedDB primero para respuesta instantánea
     if (!skipCache) {
       try {
@@ -202,7 +266,13 @@ export default function Page() {
     try {
       const { data: sedsData, error: sedsError } = await supabase.from('seds').select('*').range(0, 99999);
       const { data: llavesData } = await supabase.from('llaves').select('*').range(0, 99999);
-      const { data: fallasData } = await supabase.from('fallas').select('*').range(0, 99999);
+      const periodsResult = await supabase.from('fault_periods').select('period_key, label, start_date, end_date, row_count, created_at').order('period_key', { ascending: false });
+      const projectsResult = periodsResult.error
+        ? { data: null, error: periodsResult.error }
+        : await supabase.from('geopluz_work_projects').select('id, owner_id, name, description, sed_ids, period_keys, created_at, updated_at').order('updated_at', { ascending: false });
+      const compensationResult = periodsResult.error
+        ? { data: null, error: periodsResult.error }
+        : await supabase.from('sed_monthly_metrics').select('sed_id, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false });
       
       if (!sedsError && sedsData) {
         const db = {};
@@ -227,35 +297,46 @@ export default function Page() {
         // Guardar la versión actualizada en IndexedDB
         setCachedSeds(db);
         
-        if (fallasData) {
-          const points = fallasData.map((f, i) => ({
-            id: f.id,
-            number: i + 1,
-            coords: isValidCoordinatePair(f) ? [f.latitud, f.longitud] : null,
-            ticket: f.ticket || '',
-            horaInicio: f.hora_inicio || '',
-            zona: f.zona || '',
-            set: f.set_alimentador ? f.set_alimentador.split('/')[0]?.trim() : '',
-            alimentador: f.set_alimentador ? f.set_alimentador.split('/')[1]?.trim() : '',
-            setAlimentador: f.set_alimentador || '',
-            nota: f.nota || '',
-            odm: f.odm || '',
-            suministro: f.suministro || '',
-            sedLlave: f.sed_llave || '',
-            sed: f.sed_id || '',
-            llaveSistema: f.llave_code || '',
-            llaveCampo: `${f.llave_code || ''} (Campo)`,
-            falla: f.falla_real || '',
-            causa: f.causa || '',
-            linkCroquis: f.link_croquis || '',
-            fotos: f.fotos || [],
-            coordSource: f.coord_source || null,
-            coordLookupSuministro: f.coord_lookup_suministro || null,
-            createdAt: f.created_at || null
-          }));
+        {
+          const supportsPeriods = !periodsResult.error;
+          let onlinePeriods = supportsPeriods ? (periodsResult.data || []).map(period => ({
+            periodKey: period.period_key,
+            label: period.label || formatPeriodLabel(period.period_key),
+            startDate: period.start_date,
+            endDate: period.end_date,
+            rowCount: Number(period.row_count || 0),
+            createdAt: period.created_at
+          })) : [];
+          if (supportsPeriods) {
+            const unassignedResult = await supabase.from('fallas').select('id', { count: 'exact', head: true }).is('period_key', null);
+            if (unassignedResult.error) throw unassignedResult.error;
+            if (Number(unassignedResult.count || 0) > 0) onlinePeriods.push({ periodKey: UNASSIGNED_PERIOD_KEY, label: formatPeriodLabel(UNASSIGNED_PERIOD_KEY), rowCount: Number(unassignedResult.count), legacy: true });
+          }
+          const hasMonthlyPeriods = onlinePeriods.some(period => isMonthlyPeriodKey(period.periodKey));
+          const availableKeys = new Set(onlinePeriods.map(period => period.periodKey));
+          let initialPeriodKeys = preservePeriodSelection
+            ? selectedPeriodKeys.filter(key => availableKeys.has(key))
+            : selectRecentPeriods(onlinePeriods, 2, { includeUnassigned: !hasMonthlyPeriods && onlinePeriods.some(period => period.periodKey === UNASSIGNED_PERIOD_KEY) });
+          const points = await fetchSupabaseFaultsForPeriods(initialPeriodKeys, supportsPeriods);
+          if (!supportsPeriods) {
+            onlinePeriods = [{ periodKey: UNASSIGNED_PERIOD_KEY, label: formatPeriodLabel(UNASSIGNED_PERIOD_KEY), rowCount: points.length, legacy: true }];
+            initialPeriodKeys = [UNASSIGNED_PERIOD_KEY];
+          }
           setNumberedPointsList(points);
+          setFaultPeriods(onlinePeriods);
+          setSelectedPeriodKeys(initialPeriodKeys);
+          setPeriodSupport(supportsPeriods);
+          setSedMonthlyMetrics(!compensationResult.error ? (compensationResult.data || []).map(row => ({
+            sedId: row.sed_id,
+            periodKey: row.period_key,
+            compensation: Number(row.compensation),
+            createdAt: row.created_at,
+            updatedAt: row.updated_at
+          })) : []);
+          if (!projectsResult.error) setWorkProjects((projectsResult.data || []).map(project => ({ ...project, format: GEOPLUZ_PROJECT_CONFIG_FORMAT, version: GEOPLUZ_PROJECT_CONFIG_VERSION })));
         }
         setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
+        setMainDataLoaded(true);
       }
     } catch (err) {
       console.log('Supabase no disponible, usando caché local:', err.message);
@@ -273,6 +354,16 @@ export default function Page() {
       projectName: project.project.name,
       sourceKind: project.project.source_kind
     });
+    setMainDataLoaded(false);
+    setDeepLinkNotice('');
+    if (window.location.pathname.startsWith('/sed/')) router.replace('/', { scroll: false });
+    const localPeriodCounts = summarizePeriods(model.numberedPointsList);
+    const localPeriods = [...localPeriodCounts.entries()].map(([periodKey, rowCount]) => ({ periodKey, label: formatPeriodLabel(periodKey), rowCount, local: true }));
+    setFaultPeriods(localPeriods);
+    const hasMonthlyPeriods = localPeriods.some(period => isMonthlyPeriodKey(period.periodKey));
+    setSelectedPeriodKeys(selectRecentPeriods(localPeriods, 2, { includeUnassigned: !hasMonthlyPeriods && localPeriodCounts.has(UNASSIGNED_PERIOD_KEY) }));
+    setSedMonthlyMetrics([]);
+    setPeriodSupport(false);
     setIsAddPointMode(false);
     setRelocatingPointIndex(null);
     setIsSegmentSelectionMode(false);
@@ -494,12 +585,18 @@ export default function Page() {
   }
 
   // El matching sigue centralizado en sedUtils. La vista completa omite solo el filtro de llave.
-  const selectedLlavePoints = filterFaultsForCircuitView(numberedPointsList, {
+  const periodFilteredPoints = deduplicateSelectedFaults(filterFaultsByPeriods(numberedPointsList, selectedPeriodKeys)).faults;
+  const sedFaultRanking = sortSedPeriodMetrics(buildSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, selectedPeriodKeys), 'faultCount')
+    .filter(item => activeWorkSedIds.length === 0 || activeWorkSedIds.includes(item.sedId))
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+  const selectedSedPeriodSummary = sedFaultRanking.find(item => item.sedId === currentSedId) || null;
+  const selectedPeriodLabel = formatSelectedPeriodLabel(selectedPeriodKeys);
+  const selectedLlavePoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,
     llaveId: currentLlaveId,
     showFullSed: false
   });
-  const fullSedPoints = filterFaultsForCircuitView(numberedPointsList, {
+  const fullSedPoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,
     llaveId: currentLlaveId,
     showFullSed: true
@@ -509,6 +606,7 @@ export default function Page() {
   // Seleccionar SED y auto-seleccionar su primera llave
   const handleSedSelect = (sedId) => {
     setCurrentSedId(sedId);
+    if (sedId) setDeepLinkNotice('');
     if (sedId && localDatabase[sedId] && localDatabase[sedId].llaves) {
       const llaves = Object.keys(localDatabase[sedId].llaves);
       if (llaves.length > 0) {
@@ -521,19 +619,67 @@ export default function Page() {
     }
   };
 
+  useEffect(() => {
+    if (!isSedRoute || deepLinkResolved || !mainDataLoaded || !isSupabaseSource) return;
+    const resolution = resolveSedDeepLink(localDatabase, normalizedRequestedSedId);
+    if (resolution.found) {
+      handleSedSelect(resolution.sedId);
+      setDeepLinkNotice(resolution.notice);
+    } else {
+      setDeepLinkNotice(resolution.notice);
+    }
+    setDeepLinkResolved(true);
+  }, [deepLinkResolved, isSedRoute, isSupabaseSource, localDatabase, mainDataLoaded, normalizedRequestedSedId]);
+
+  useEffect(() => {
+    if (!deepLinkResolved || !mainDataLoaded || !isSupabaseSource) return;
+    const nextPath = currentSedId ? buildSedPath(currentSedId) : '/';
+    if (pathname !== nextPath) router.replace(nextPath, { scroll: false });
+  }, [currentSedId, deepLinkResolved, isSupabaseSource, mainDataLoaded, pathname, router]);
+
+  async function handleCopySedLink() {
+    if (!currentSedId || typeof window === 'undefined') return;
+    try {
+      await navigator.clipboard.writeText(buildSedUrl(window.location.origin, currentSedId));
+      setSedLinkFeedback('Enlace copiado');
+    } catch {
+      setSedLinkFeedback('No se pudo copiar');
+    }
+    if (copyFeedbackTimeoutRef.current) window.clearTimeout(copyFeedbackTimeoutRef.current);
+    copyFeedbackTimeoutRef.current = window.setTimeout(() => setSedLinkFeedback(''), 1800);
+  }
+
+  useEffect(() => () => {
+    if (copyFeedbackTimeoutRef.current) window.clearTimeout(copyFeedbackTimeoutRef.current);
+  }, []);
+
   // Importación JSON
-  function handleImportJson(files) {
+  async function openTemporaryWorkspaceForImport() {
+    if (!isSupabaseSource) return false;
+    const timestamp = new Date().toISOString();
+    const temporaryProject = await createProjectDocument(localDatabase, numberedPointsList, {
+      projectId: `temporary-${Date.now()}`,
+      projectName: `Datos temporales ${timestamp.slice(0, 16).replace('T', ' ')}`,
+      sourceKind: 'LOCAL_TEMPORARY'
+    });
+    await handleOpenLocalProject(temporaryProject, null, { editable: true });
+    return true;
+  }
+
+  async function handleImportJson(files) {
     if (!isEditable) {
       alert('El proyecto local está en modo solo lectura. Cierra el proyecto local para cargar registros en la Base Principal.');
       return;
     }
     if (!files || files.length === 0) return;
+    const movedToLocalWorkspace = await openTemporaryWorkspaceForImport();
     Array.from(files).forEach(file => {
       const reader = new FileReader();
       reader.onload = async (evt) => {
         try {
           const rawData = parseProjectJson(evt.target.result);
           await mergeJsonData(rawData, file.name);
+          if (movedToLocalWorkspace) alert('El JSON se abriÃ³ en una copia local editable. Supabase no fue modificado.');
         } catch(err) {
           alert(`❌ Error al leer el archivo JSON "${file.name}":\n` + err.message);
         }
@@ -553,7 +699,9 @@ export default function Page() {
     if (!jsonText || !jsonText.trim()) return;
     try {
       const rawData = parseProjectJson(jsonText.trim());
+      const movedToLocalWorkspace = await openTemporaryWorkspaceForImport();
       await mergeJsonData(rawData, 'Texto Pegado');
+      if (movedToLocalWorkspace) alert('Los datos pegados se abrieron en una copia local editable. Supabase no fue modificado.');
     } catch(err) {
       alert('❌ Error al procesar el código JSON pegado. Verifique que el formato esté completo y sea un JSON válido.\nDetalle: ' + err.message);
     }
@@ -1077,6 +1225,7 @@ export default function Page() {
       zona: point.zona,
       set_alimentador: `${point.set || ''} / ${point.alimentador || ''}`,
       hora_inicio: point.horaInicio,
+      call_count: point.callCount ?? null,
       latitud: pair[0],
       longitud: pair[1],
       link_croquis: point.linkCroquis || null,
@@ -1232,7 +1381,7 @@ export default function Page() {
     await invalidateSedsCache();
     setCurrentSedId('');
     setCurrentLlaveId('');
-    await loadSupabaseData({ skipCache: true });
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
     alert('SED eliminada. Las fallas existentes se conservaron sin modificar.');
   }
 
@@ -1630,9 +1779,109 @@ export default function Page() {
     }
   }
 
+  async function handleImportMonthly(preview, { replace = false } = {}) {
+    if (!isSupabaseSource || !periodSupport || !supabase) throw new Error('La carga mensual online requiere Base Principal y la migración de periodos aplicada.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_import_fault_period', {
+      p_period_key: preview.periodKey,
+      p_label: preview.periodLabel,
+      p_rows: preview.rows,
+      p_replace: Boolean(replace)
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
+  async function handleImportCompensation(preview, { replace = false } = {}) {
+    if (!isSupabaseSource || !periodSupport || !supabase) throw new Error('La compensación mensual online requiere Base Principal y la migración aplicada.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_import_sed_compensation_period', {
+      p_period_key: preview.periodKey,
+      p_rows: preview.rows,
+      p_replace: Boolean(replace)
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
+  async function handleDeleteCompensationPeriod(period) {
+    if (!isSupabaseSource || !periodSupport || !supabase) throw new Error('La compensación no puede eliminarse desde el modo actual.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_delete_sed_compensation_period', {
+      p_period_key: period.periodKey,
+      p_expected_rows: period.sedCount
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
+  async function handleDeleteFaultPeriod(period) {
+    if (!isSupabaseSource || !periodSupport || !supabase || period?.periodKey === UNASSIGNED_PERIOD_KEY) throw new Error('Este periodo no puede eliminarse desde el modo actual.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_delete_fault_period', {
+      p_period_key: period.periodKey,
+      p_expected_rows: period.rowCount
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
+  async function handleSaveWorkProject(config) {
+    if (isSupabaseSource && periodSupport && supabase) {
+      const { session } = await requireLifecycleSession();
+      const row = {
+        id: config.id,
+        owner_id: session.user.id,
+        name: config.name,
+        description: config.description,
+        sed_ids: config.sed_ids,
+        period_keys: config.period_keys,
+        created_at: config.created_at,
+        updated_at: config.updated_at
+      };
+      const { error } = await supabase.from('geopluz_work_projects').insert(row);
+      if (error) throw error;
+      setWorkProjects(current => [{ ...config, owner_id: session.user.id }, ...current.filter(item => item.id !== config.id)]);
+      return;
+    }
+    const saved = await saveLocalWorkProjectConfig(config);
+    if (!saved) throw new Error('El navegador no pudo guardar la configuración local.');
+    setWorkProjects(await listLocalWorkProjectConfigs());
+  }
+
+  async function handleOpenWorkProject(config) {
+    const validation = validateWorkProjectConfig(config, Object.keys(localDatabase), faultPeriods.map(period => period.periodKey));
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
+    const availablePeriods = config.period_keys.filter(key => !validation.missingPeriods.includes(key));
+    const availableSeds = config.sed_ids.filter(id => !validation.missingSeds.includes(id));
+    if (validation.missingSeds.length || validation.missingPeriods.length) {
+      alert(`El proyecto se abrirá parcialmente.\nSED ausentes: ${validation.missingSeds.join(', ') || 'ninguna'}\nPeriodos ausentes: ${validation.missingPeriods.join(', ') || 'ninguno'}`);
+    }
+    setActiveWorkSedIds(availableSeds);
+    await handleChangeSelectedPeriods(availablePeriods);
+    if (availableSeds[0]) handleSedSelect(availableSeds[0]);
+  }
+
+  async function handleDeleteWorkProject(projectId) {
+    if (!confirm('¿Eliminar esta definición de proyecto? No se borrarán SED, geometrías ni fallas.')) return;
+    const onlineProject = isSupabaseSource && periodSupport && workProjects.some(project => project.id === projectId && project.owner_id);
+    if (onlineProject) {
+      const { error } = await supabase.from('geopluz_work_projects').delete().eq('id', projectId);
+      if (error) return alert('No se pudo eliminar la definición del proyecto.');
+    } else {
+      await removeLocalWorkProjectConfig(projectId);
+    }
+    setWorkProjects(current => current.filter(project => project.id !== projectId));
+  }
+
   return (
     <>
       <DataSourceBadge dataSource={dataSource} onCloseLocalProject={handleCloseLocalProject} />
+      {deepLinkNotice && <div className="sed-deep-link-notice" role="status">{deepLinkNotice}</div>}
       {!isPresentationMode && (
         <Sidebar
           seds={localDatabase}
@@ -1704,6 +1953,22 @@ export default function Page() {
           onFinalizeProject={handleFinalizeProject}
           onDeleteMainProject={handleDeleteMainProject}
           onCloseLocalProject={handleCloseLocalProject}
+          faultPeriods={faultPeriods}
+          selectedPeriodKeys={selectedPeriodKeys}
+          onChangeSelectedPeriods={handleChangeSelectedPeriods}
+          sedFaultRanking={sedFaultRanking}
+          periodSupport={periodSupport && isSupabaseSource}
+          onImportMonthly={handleImportMonthly}
+          onDeletePeriod={handleDeleteFaultPeriod}
+          compensationRows={sedMonthlyMetrics}
+          onImportCompensation={handleImportCompensation}
+          onDeleteCompensationPeriod={handleDeleteCompensationPeriod}
+          workProjects={workProjects}
+          onSaveWorkProject={handleSaveWorkProject}
+          onOpenWorkProject={handleOpenWorkProject}
+          onDeleteWorkProject={handleDeleteWorkProject}
+          onCopySedLink={handleCopySedLink}
+          sedLinkFeedback={sedLinkFeedback}
         />
       )}
       
@@ -1736,6 +2001,8 @@ export default function Page() {
           onSedDragEnd={handleSedDragEnd}
           onPointClick={(idx) => { setEditingPointIndex(idx); setIsFormOpen(true); }}
           hideOverlays={isMajorOverlayOpen}
+          sedPeriodSummary={selectedSedPeriodSummary}
+          selectedPeriodLabel={selectedPeriodLabel}
         />
       </div>
       
