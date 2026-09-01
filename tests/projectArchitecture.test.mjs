@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SEDS_CACHE_KEY, clearExpectedLocalProject, getExpectedLocalProject, getLocalProjectCacheKey, markLocalProjectExpected } from '../lib/dbCache.js';
+import { SEDS_CACHE_KEY, clearExpectedLocalProject, getExpectedLocalProject, getLocalProjectCacheKey, markLocalProjectExpected, upsertLocalProjectCatalog } from '../lib/dbCache.js';
 import { isLegacyNetworkJson, parseProjectJson, ProjectParseError } from '../lib/projectFormat.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
 import { parseAndValidateProjectInputText, validateProject } from '../lib/projectValidation.js';
@@ -171,4 +171,20 @@ test('editable local workspace is exposed without enabling Supabase write paths'
   assert.match(pageSource, /async function saveSedsToSupabase[\s\S]*?if \(!isSupabaseSource\) return;/);
   assert.match(panelSource, /Abrir copia editable/);
   assert.match(panelSource, /!isLocalWorkspace && <button[\s\S]*?Reemplazar Base Principal/);
+});
+
+test('local project catalog keeps independent projects and updates an existing id deterministically', async () => {
+  const first = await projectFixture();
+  const second = await projectFixture();
+  second.project.id = 'proyecto-dos';
+  second.project.name = 'Proyecto dos';
+  let catalog = upsertLocalProjectCatalog([], first, { editable: true, updatedAt: 10 });
+  catalog = upsertLocalProjectCatalog(catalog, second, { editable: false, updatedAt: 20 });
+  assert.deepEqual(catalog.map(item => item.projectId), ['proyecto-dos', 'proyecto-prueba']);
+  first.project.name = 'Proyecto actualizado';
+  catalog = upsertLocalProjectCatalog(catalog, first, { editable: true, updatedAt: 30 });
+  assert.equal(catalog.length, 2);
+  assert.equal(catalog[0].projectName, 'Proyecto actualizado');
+  assert.equal(catalog[0].editable, true);
+  assert.deepEqual(catalog[0].counts, { seds: 1, llaves: 1, fallas: 2 });
 });

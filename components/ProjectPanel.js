@@ -32,9 +32,12 @@ function parseInWorker(text) {
 
 export default function ProjectPanel({
   dataSource,
+  localProjects = [],
   hasData,
   onDownloadProject,
   onOpenLocalProject,
+  onSwitchLocalProject,
+  onRemoveLocalProject,
   onGetActiveLocalProject,
   onCheckMainDatabase,
   onDownloadMainProject,
@@ -58,6 +61,7 @@ export default function ProjectPanel({
   const [replacementConfirmed, setReplacementConfirmed] = useState(false);
   const [replacementText, setReplacementText] = useState('');
   const [lifecycleError, setLifecycleError] = useState('');
+  const [catalogAction, setCatalogAction] = useState({ projectId: '', error: '' });
   const [deleteDialog, setDeleteDialog] = useState({ open: false, phase: 'idle', counts: null, backup: false, text: '', error: '', technicalDetails: null });
   const textareaRef = useRef(null);
 
@@ -181,6 +185,27 @@ export default function ProjectPanel({
     }
   };
 
+  const handleSwitchCatalogProject = async (projectId, editable) => {
+    setCatalogAction({ projectId, error: '' });
+    try {
+      await onSwitchLocalProject(projectId, { editable });
+      setCatalogAction({ projectId: '', error: '' });
+    } catch (error) {
+      setCatalogAction({ projectId: '', error: error?.message || 'No se pudo abrir la copia local.' });
+    }
+  };
+
+  const handleRemoveCatalogProject = async (project) => {
+    if (!window.confirm(`¿Eliminar "${project.projectName}" de este navegador?\n\nSupabase y el archivo original no se modificarán.`)) return;
+    setCatalogAction({ projectId: project.projectId, error: '' });
+    try {
+      await onRemoveLocalProject(project.projectId);
+      setCatalogAction({ projectId: '', error: '' });
+    } catch (error) {
+      setCatalogAction({ projectId: '', error: error?.message || 'No se pudo eliminar la copia local.' });
+    }
+  };
+
   const finalizePreparedProject = async () => {
     if (!result?.valid || staging?.status !== 'ready' || !databaseState.counts) return;
     setPhase('finalizing');
@@ -296,6 +321,31 @@ export default function ProjectPanel({
             <i className={`fa-solid ${isLocalWorkspace ? 'fa-file-pen' : 'fa-file-shield'}`}></i>
             <span>{isLocalWorkspace ? 'Copia editable local' : 'Proyecto local en consulta'}</span>
           </div>}
+          <div className="project-catalog" aria-label="Proyectos disponibles en este navegador">
+            <div className={`project-catalog-row is-main ${!isLocal ? 'is-active' : ''}`}>
+              <div><strong>Base Principal</strong><span>Supabase</span></div>
+              <button className="btn btn-outline" disabled={!isLocal || Boolean(catalogAction.projectId)} onClick={() => onCloseLocalProject()}>
+                {!isLocal ? 'Actual' : 'Abrir'}
+              </button>
+            </div>
+            {localProjects.map(project => {
+              const isActive = isLocal && dataSource?.projectId === project.projectId;
+              const isBusy = catalogAction.projectId === project.projectId;
+              return <div key={project.projectId} className={`project-catalog-row ${isActive ? 'is-active' : ''}`}>
+                <div className="project-catalog-info">
+                  <strong title={project.projectName}>{project.projectName}</strong>
+                  <span>SED {project.counts?.seds || 0} · Circuitos {project.counts?.llaves || 0} · Fallas {project.counts?.fallas || 0}</span>
+                </div>
+                <div className="project-catalog-actions">
+                  <button className="btn btn-green" disabled={isBusy || (isActive && isLocalWorkspace)} onClick={() => handleSwitchCatalogProject(project.projectId, true)}>{isActive && isLocalWorkspace ? 'Editando' : 'Editar'}</button>
+                  <button className="btn btn-outline" disabled={isBusy || (isActive && !isLocalWorkspace)} onClick={() => handleSwitchCatalogProject(project.projectId, false)}>{isActive && !isLocalWorkspace ? 'Consultando' : 'Consultar'}</button>
+                  <button className="project-catalog-remove" disabled={isBusy} onClick={() => handleRemoveCatalogProject(project)} title="Eliminar solo de este navegador"><i className="fa-solid fa-trash-can"></i></button>
+                </div>
+              </div>;
+            })}
+            {localProjects.length === 0 && <p className="project-catalog-empty">Todavía no hay copias locales guardadas.</p>}
+          </div>
+          {catalogAction.error && <div className="project-validation-errors" role="alert"><strong>No se pudo cambiar de proyecto</strong><p>{catalogAction.error}</p></div>}
           <button className="btn btn-green" onClick={onDownloadProject} disabled={!hasData}>
             <i className="fa-solid fa-download"></i> Descargar proyecto
           </button>

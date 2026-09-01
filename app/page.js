@@ -13,7 +13,7 @@ import { sortSedIds } from '@/components/SearchableSedSelect';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
-import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getCachedSeds, getExpectedLocalProject, invalidateSedsCache, markLocalProjectExpected, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
+import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, markLocalProjectExpected, removeLocalProject, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
 import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
@@ -120,6 +120,7 @@ export default function Page() {
   const [deletingPointId, setDeletingPointId] = useState(null);
   const [activeMajorOverlays, setActiveMajorOverlays] = useState(() => new Set());
   const [dataSource, setDataSource] = useState({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
+  const [localProjectCatalog, setLocalProjectCatalog] = useState([]);
 
   // Estado del Formulario
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -163,11 +164,15 @@ export default function Page() {
 
   async function initializeData() {
     const expectedLocalProject = getExpectedLocalProject();
-    const cachedLocalProject = await getActiveLocalProject();
-    if (cachedLocalProject) {
-      const validation = await validateProject(cachedLocalProject);
+    const [activeLocalProject, catalog] = await Promise.all([getActiveLocalProjectState(), listLocalProjects()]);
+    setLocalProjectCatalog(catalog);
+    if (activeLocalProject?.project) {
+      const validation = await validateProject(activeLocalProject.project);
       if (validation.valid) {
-        applyLocalProject(cachedLocalProject, { editable: Boolean(expectedLocalProject?.editable) });
+        const editable = activeLocalProject.editable || Boolean(expectedLocalProject?.editable);
+        await setActiveLocalProject(activeLocalProject.project, { editable });
+        setLocalProjectCatalog(await listLocalProjects());
+        applyLocalProject(activeLocalProject.project, { editable });
         return;
       }
       await clearActiveLocalProject();
@@ -283,8 +288,10 @@ export default function Page() {
   async function handleOpenLocalProject(project, _validationResult, { editable = false } = {}) {
     const validation = await validateProject(project);
     if (!validation.valid) throw new Error('El proyecto dejó de ser válido antes de abrirse.');
-    const cached = await setActiveLocalProject(project);
+    if (isLocalWorkspace) await persistCurrentLocalWorkspace();
+    const cached = await setActiveLocalProject(project, { editable });
     applyLocalProject(project, { editable });
+    setLocalProjectCatalog(await listLocalProjects());
     if (!cached) {
       alert('El proyecto se abrió localmente, pero el navegador no permitió guardarlo para futuras recargas.');
     }
@@ -300,17 +307,48 @@ export default function Page() {
     });
   }
 
+  async function persistCurrentLocalWorkspace() {
+    if (!isLocalWorkspace) return null;
+    const project = await createProjectDocument(localDatabase, numberedPointsList, {
+      projectId: dataSource.projectId,
+      projectName: dataSource.projectName,
+      sourceKind: dataSource.sourceKind || 'LOCAL_PROJECT'
+    });
+    const saved = await setActiveLocalProject(project, { editable: true });
+    if (saved) {
+      markLocalProjectExpected(project, { editable: true });
+      setLocalProjectCatalog(await listLocalProjects());
+    }
+    return project;
+  }
+
+  async function handleSwitchLocalProject(projectId, { editable = true } = {}) {
+    if (!projectId || (projectId === dataSource.projectId && editable === isLocalWorkspace)) return;
+    if (isLocalWorkspace) await persistCurrentLocalWorkspace();
+    const project = await getLocalProject(projectId);
+    if (!project) throw new Error('La copia local seleccionada ya no está disponible en este navegador.');
+    const validation = await validateProject(project);
+    if (!validation.valid) throw new Error('La copia local seleccionada no supera la validación del proyecto.');
+    const saved = await setActiveLocalProject(project, { editable });
+    if (!saved) throw new Error('El navegador no pudo activar la copia local seleccionada.');
+    applyLocalProject(project, { editable });
+    setLocalProjectCatalog(await listLocalProjects());
+  }
+
+  async function handleRemoveLocalProject(projectId) {
+    const wasActive = dataSource.projectId === projectId && !isSupabaseSource;
+    if (wasActive && isLocalWorkspace) await persistCurrentLocalWorkspace();
+    const removed = await removeLocalProject(projectId);
+    if (!removed) throw new Error('No se pudo eliminar la copia local del navegador.');
+    setLocalProjectCatalog(await listLocalProjects());
+    if (wasActive) await handleCloseLocalProject({ skipPersist: true });
+  }
+
   useEffect(() => {
     if (!isLocalWorkspace) return undefined;
     const timeoutId = window.setTimeout(async () => {
       try {
-        const project = await createProjectDocument(localDatabase, numberedPointsList, {
-          projectId: dataSource.projectId,
-          projectName: dataSource.projectName,
-          sourceKind: dataSource.sourceKind || 'LOCAL_PROJECT'
-        });
-        const saved = await setActiveLocalProject(project);
-        if (saved) markLocalProjectExpected(project, { editable: true });
+        await persistCurrentLocalWorkspace();
       } catch (error) {
         console.warn('No se pudo guardar la copia editable local:', error?.message || 'Error desconocido');
       }
@@ -325,8 +363,9 @@ export default function Page() {
     return getMainDatabaseState(createSupabaseProjectRepository(supabase));
   }
 
-  async function handleCloseLocalProject() {
+  async function handleCloseLocalProject({ skipPersist = false } = {}) {
     if (dataSource.kind !== 'LOCAL_PROJECT' && dataSource.kind !== 'LOCAL_WORKSPACE') return;
+    if (isLocalWorkspace && !skipPersist) await persistCurrentLocalWorkspace();
     await clearActiveLocalProject();
     clearExpectedLocalProject();
     setLocalDatabase({});
@@ -1652,8 +1691,11 @@ export default function Page() {
           onFlyToPoint={(point) => mapRef.current?.focusFailure?.(point)}
           onMajorOverlayChange={setMajorOverlayOpen}
           dataSource={dataSource}
+          localProjects={localProjectCatalog}
           onDownloadProject={handleDownloadProject}
           onOpenLocalProject={handleOpenLocalProject}
+          onSwitchLocalProject={handleSwitchLocalProject}
+          onRemoveLocalProject={handleRemoveLocalProject}
           onGetActiveLocalProject={handleGetActiveLocalProject}
           onCheckMainDatabase={handleCheckMainDatabase}
           onDownloadMainProject={handleDownloadMainProject}

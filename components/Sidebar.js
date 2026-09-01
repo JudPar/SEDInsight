@@ -77,8 +77,11 @@ export default function Sidebar({
   onFlyToPoint,
   onMajorOverlayChange,
   dataSource,
+  localProjects,
   onDownloadProject,
   onOpenLocalProject,
+  onSwitchLocalProject,
+  onRemoveLocalProject,
   onGetActiveLocalProject,
   onCheckMainDatabase,
   onDownloadMainProject,
@@ -228,9 +231,12 @@ export default function Sidebar({
       <div className="sidebar-content">
         <ProjectPanel
           dataSource={dataSource}
+          localProjects={localProjects}
           hasData={hasData || faultPoints.length > 0}
           onDownloadProject={onDownloadProject}
           onOpenLocalProject={onOpenLocalProject}
+          onSwitchLocalProject={onSwitchLocalProject}
+          onRemoveLocalProject={onRemoveLocalProject}
           onGetActiveLocalProject={onGetActiveLocalProject}
           onCheckMainDatabase={onCheckMainDatabase}
           onDownloadMainProject={onDownloadMainProject}
