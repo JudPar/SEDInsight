@@ -20,7 +20,7 @@ import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } f
 import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
 import { GEOPLUZ_PROJECT_FORMAT, parseProjectJson } from '@/lib/projectFormat';
 import { createProjectDocument, projectToInternalModel } from '@/lib/projectMappers';
-import { validateProject } from '@/lib/projectValidation';
+import { assertProjectReadyForDownload, validateProject } from '@/lib/projectValidation';
 import { createSupabaseProjectRepository, getMainDatabaseState } from '@/lib/projectImport';
 import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging, finalizeStagedProject, stageProject } from '@/lib/projectStaging';
 import { deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, isMonthlyPeriodKey, selectRecentPeriods, summarizePeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
@@ -90,7 +90,8 @@ function mapSupabaseRowsToProjectState(sedsData = [], llavesData = [], fallasDat
   return { database, faults };
 }
 
-function downloadProjectFile(project) {
+async function downloadProjectFile(project) {
+  await assertProjectReadyForDownload(project);
   const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -474,7 +475,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         projectName: dataSource.projectName,
         sourceKind: dataSource.sourceKind || dataSource.kind
       });
-      downloadProjectFile(project);
+      await downloadProjectFile(project);
     } catch (error) {
       alert(`No se pudo generar el proyecto: ${error.message}`);
     }
@@ -501,7 +502,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     const project = await createProjectDocument(state.database, state.faults, {
       projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ', sourceKind: 'SUPABASE'
     });
-    downloadProjectFile(project);
+    await downloadProjectFile(project);
   }
 
   async function handleStageProject(project, onProgress) {

@@ -19,7 +19,7 @@ import { buildCircuitTopology, NODE_SNAP_TOLERANCE_METERS, TERMINAL_SPUR_MAX_MET
 import { ANALYSIS_MAX_DEFLECTION_DEG, ANALYSIS_MIN_ANGLE_MARGIN_DEG, buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '../lib/analysisSegments.js';
 import { mapProjectForSupabase } from '../lib/projectImport.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
-import { validateProject } from '../lib/projectValidation.js';
+import { assertProjectReadyForDownload, validateProject } from '../lib/projectValidation.js';
 
 const ANALYSIS_MARKER = '__geopluz_circuit_analysis__';
 
@@ -73,6 +73,82 @@ test('lines_data preserves absent, null and empty optional properties exactly', 
   const roundTrip = await createProjectDocument(local.localDatabase, local.numberedPointsList);
   assert.deepEqual(roundTrip.llaves[0].lines_data, linesData);
   assert.equal(Object.hasOwn(roundTrip.llaves[0].analysis.cable_groups[0], 'note'), false);
+});
+
+test('canonical export preserves 2610 original records while exposing only 2572 drawable lines', async () => {
+  const localDatabase = {
+    REAL: { id: 'REAL', name: 'Regresion real', sedCoord: [-12, -77], llaves: {} }
+  };
+  let recordIndex = 0;
+
+  for (let llaveIndex = 0; llaveIndex < 19; llaveIndex += 1) {
+    const recordCount = 137 + (llaveIndex < 7 ? 1 : 0);
+    const records = Array.from({ length: recordCount }, (_, lineIndex) => {
+      const originalIndex = recordIndex;
+      recordIndex += 1;
+      const metadata = { originalIndex, source: 'round-trip-real', keep: { nested: true } };
+      if (lineIndex < 2) {
+        return {
+          id: `device-${llaveIndex}-${lineIndex}`,
+          coords: [],
+          length: lineIndex === 0 ? 4 : 0,
+          properties: { 'Tipo Dispositivo': lineIndex === 0 ? 'Toma' : 'Seccionador unipolar' },
+          metadata
+        };
+      }
+      return {
+        id: `line-${llaveIndex}-${lineIndex}`,
+        coords: [[-12, -77], [-12, -76.9999]],
+        length: 10,
+        properties: { 'Tipo de Red': 'BT' },
+        metadata
+      };
+    });
+    const llave = { id: llaveIndex + 1, name: `L${llaveIndex + 1}`, lines: records };
+    if (llaveIndex % 2 === 1) llave.linesData = structuredClone(records);
+    localDatabase.REAL.llaves[`L${llaveIndex + 1}`] = llave;
+  }
+
+  assert.equal(recordIndex, 2610);
+  const options = { projectId: 'round-trip-real', projectName: 'Round-trip real', sourceKind: 'LOCAL_TEMPORARY' };
+  const project = await createProjectDocument(localDatabase, [], options);
+  const exportedLines = project.llaves.flatMap(llave => llave.lines);
+  const preservedLines = project.llaves.flatMap(llave => llave.lines_data.filter(item => !item?.[ANALYSIS_MARKER]));
+
+  assert.equal(exportedLines.length, 2572);
+  assert.equal(preservedLines.length, 2610);
+  assert.equal(exportedLines.some(line => line.coords.length === 0), false);
+  assert.equal(preservedLines.filter(line => Array.isArray(line.coords) && line.coords.length === 0).length, 38);
+  assert.deepEqual(preservedLines.find(line => line.id === 'device-0-0').metadata, {
+    originalIndex: 0,
+    source: 'round-trip-real',
+    keep: { nested: true }
+  });
+  assert.equal((await validateProject(project)).valid, true);
+  await assertProjectReadyForDownload(project);
+
+  const restored = projectToInternalModel(project);
+  const secondExport = await createProjectDocument(restored.localDatabase, restored.numberedPointsList, options);
+  assert.equal((await validateProject(secondExport)).valid, true);
+  assert.deepEqual(secondExport.seds, project.seds);
+  assert.deepEqual(secondExport.llaves, project.llaves);
+  assert.deepEqual(secondExport.fallas, project.fallas);
+  assert.deepEqual(secondExport.external_assets, project.external_assets);
+  assert.equal(secondExport.integrity.checksum, project.integrity.checksum);
+});
+
+test('download validation rejects an invalid canonical project with a clear diagnostic', async () => {
+  const project = await createProjectDocument(databaseWithLinesData([
+    { id: 'line-1', coords: [[-12, -77], [-12.1, -77.1]], length: 10 }
+  ]), []);
+  project.llaves[0].lines[0].coords = [];
+
+  await assert.rejects(
+    () => assertProjectReadyForDownload(project),
+    error => error?.code === 'INVALID_PROJECT_EXPORT' &&
+      error.message.includes('no fue descargado') &&
+      error.message.includes('$.llaves[0].lines[0].coords')
+  );
 });
 
 test('phase 1 circuit analysis deduplicates only exact id and geometry pairs', () => {
