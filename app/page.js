@@ -832,16 +832,25 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       setLocalDatabase(prev => {
         const updated = { ...prev };
         for (const sedId in incoming) {
+          const incomingSed = incoming[sedId] || {};
+          const normalizedSed = {
+            ...incomingSed,
+            sedCoord: incomingSed.sedCoord ?? incomingSed.sed_coord ?? incomingSed.coords ?? null
+          };
           if (!updated[sedId]) {
-            updated[sedId] = incoming[sedId];
+            updated[sedId] = normalizedSed;
           } else {
             const existingLlaves = { ...(updated[sedId].llaves || {}) };
-            const newLlaves = incoming[sedId].llaves || {};
+            const newLlaves = normalizedSed.llaves || {};
             for (const llaveId in newLlaves) {
               const existingAnalysis = existingLlaves[llaveId]?.analysis;
               existingLlaves[llaveId] = { ...newLlaves[llaveId], ...(existingAnalysis ? { analysis: existingAnalysis } : {}) };
             }
-            updated[sedId] = { ...updated[sedId], llaves: existingLlaves };
+            updated[sedId] = {
+              ...updated[sedId],
+              sedCoord: updated[sedId].sedCoord ?? normalizedSed.sedCoord,
+              llaves: existingLlaves
+            };
           }
         }
 

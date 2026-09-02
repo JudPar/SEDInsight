@@ -173,6 +173,24 @@ test('editable local workspace is exposed without enabling Supabase write paths'
   assert.match(panelSource, /!isLocalWorkspace && <button[\s\S]*?Reemplazar Base Principal/);
 });
 
+test('temporary import workspace is a valid canonical local project', async () => {
+  const { database, faults } = fixture();
+  const temporary = await createProjectDocument(database, faults, {
+    projectId: 'temporary-test',
+    projectName: 'Datos temporales',
+    sourceKind: 'LOCAL_TEMPORARY'
+  });
+  const validation = await validateProject(temporary);
+  assert.equal(validation.valid, true);
+  assert.equal(temporary.project.source_kind, 'LOCAL_TEMPORARY');
+});
+
+test('temporary network paste normalizes SED coords without changing existing coordinates', () => {
+  const pageSource = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.match(pageSource, /sedCoord: incomingSed\.sedCoord \?\? incomingSed\.sed_coord \?\? incomingSed\.coords \?\? null/);
+  assert.match(pageSource, /sedCoord: updated\[sedId\]\.sedCoord \?\? normalizedSed\.sedCoord/);
+});
+
 test('local project catalog keeps independent projects and updates an existing id deterministically', async () => {
   const first = await projectFixture();
   const second = await projectFixture();
