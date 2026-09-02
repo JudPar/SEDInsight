@@ -693,7 +693,15 @@ select.input-control option {
 body.dark-theme .sed-deep-link-notice { background: #332a0c; color: #ffe082; border-color: #b88a00; }
 .hud-brand, .hud-context, .hud-actions { display: flex; align-items: center; gap: 8px; }
 .hud-brand img { height: 22px; object-fit: contain; }
-.hud-context { gap: 10px; }
+.hud-context { gap: 10px; min-width: 0; }
+.hud-navigation { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.hud-navigation .sed-search { flex: 0 1 150px; min-width: 120px; }
+.hud-navigation .input-control,
+.hud-navigation select { height: 28px; background: var(--bg-secondary); border: 1px solid var(--accent-cyan); border-radius: 5px; color: var(--text-main); font-size: 11px; font-weight: 600; }
+.hud-navigation .input-control { width: 100%; }
+.hud-llave-select { width: 150px; min-width: 120px; padding: 2px 6px; }
+.hud-status-select { width: 125px; min-width: 110px; padding: 2px 6px; }
+.hud-navigation .sed-search-options { min-width: 220px; }
 .hud-title select, .hud-search select { background: var(--bg-secondary); border: 1px solid var(--accent-cyan); border-radius: 4px; color: var(--text-main); font-size: 10px; padding: 2px 4px; }
 .hud-search { position: relative; min-width: 140px; }
 .hud-search-input { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: var(--bg-secondary); border: 1px solid var(--accent-cyan); border-radius: 5px; }
@@ -712,7 +720,9 @@ body.dark-theme .hud-edit-btn { color: #ffab00; }
   #sidebar, .sidebar { width: 400px; min-width: 360px; }
   .header-brand .brand-info span { display: none; }
   .theme-toggle-btn span { display: none; }
-  .presentation-hud { left: 12px; right: 12px; transform: none; overflow-x: auto; justify-content: flex-start; }
+  .presentation-hud { left: 12px; right: 12px; transform: none; flex-wrap: wrap; overflow: visible; justify-content: flex-start; }
+  .presentation-hud .hud-context { order: 3; width: 100%; }
+  .presentation-hud .hud-navigation { width: 100%; flex-wrap: wrap; }
 }
 
 @media (max-width: 720px) {
@@ -729,8 +739,9 @@ body.dark-theme .hud-edit-btn { color: #ffab00; }
   .presentation-hud > div:nth-child(3) { flex: 1; justify-content: flex-end; overflow-x: auto; }
   .presentation-hud .hud-btn { padding: 5px 8px; }
   .presentation-hud .hud-btn span { display: none; }
-  .presentation-hud .hud-title { white-space: normal; }
-  .presentation-hud .hud-title + div { flex: 1; min-width: 180px; }
+  .presentation-hud .hud-navigation { width: 100%; flex-wrap: wrap; }
+  .presentation-hud .hud-navigation .sed-search { flex: 1 1 150px; }
+  .presentation-hud .hud-llave-select, .presentation-hud .hud-status-select { flex: 1 1 120px; width: auto; }
   .map-viewer.is-presentation .map-legend-container { bottom: 330px !important; max-height: calc(100vh - 445px); overflow-y: auto; }
   .pres-table-header { align-items: flex-start; }
   .pres-table-actions { margin-left: auto; }

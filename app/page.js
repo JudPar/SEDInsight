@@ -10,7 +10,7 @@ import PresentationHUD from '@/components/PresentationHUD';
 import PresentationTablePanel from '@/components/PresentationTablePanel';
 import TicketConflictModal from '@/components/TicketConflictModal';
 import DataSourceBadge from '@/components/DataSourceBadge';
-import { sortSedIds } from '@/components/SearchableSedSelect';
+import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sortLlaveIds, sortSedIds } from '@/lib/navigationSort';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
@@ -24,6 +24,7 @@ import { assertProjectReadyForDownload, validateProject } from '@/lib/projectVal
 import { createSupabaseProjectRepository, getMainDatabaseState } from '@/lib/projectImport';
 import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging, finalizeStagedProject, stageProject } from '@/lib/projectStaging';
 import { deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, isMonthlyPeriodKey, selectRecentPeriods, summarizePeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
+import { georeferenceMonthlyFaultRows } from '@/lib/monthlyFaultImport';
 import { buildSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
 import { buildSedPath, buildSedUrl, normalizeSedIdParam, resolveSedDeepLink } from '@/lib/sedLinks';
 import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
@@ -120,7 +121,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   // Estado de Navegación
   const [currentSedId, setCurrentSedId] = useState('');
   const [currentLlaveId, setCurrentLlaveId] = useState('');
-  const [showFullSedView, setShowFullSedView] = useState(false);
+  const [showFullSedView, setShowFullSedView] = useState(true);
 
   // Estado UI
   const [currentTheme, setCurrentTheme] = useState('light');
@@ -607,9 +608,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   // Seleccionar SED y auto-seleccionar su primera llave
   const handleSedSelect = (sedId) => {
     setCurrentSedId(sedId);
+    setShowFullSedView(false);
     if (sedId) setDeepLinkNotice('');
     if (sedId && localDatabase[sedId] && localDatabase[sedId].llaves) {
-      const llaves = Object.keys(localDatabase[sedId].llaves);
+      const llaves = sortLlaveIds(Object.keys(localDatabase[sedId].llaves));
       if (llaves.length > 0) {
         setCurrentLlaveId(llaves[0]);
       } else {
@@ -620,17 +622,42 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     }
   };
 
+  const handlePresentationSedSelect = (sedId) => {
+    const selection = resolvePresentationSedSelection(sedId);
+    setCurrentSedId(selection.sedId);
+    setCurrentLlaveId(selection.llaveId);
+    setShowFullSedView(selection.showFullSedView);
+    if (sedId) setDeepLinkNotice('');
+  };
+
+  const handlePresentationLlaveSelect = (llaveId) => {
+    const selection = resolvePresentationLlaveSelection(currentSedId, llaveId);
+    setCurrentLlaveId(selection.llaveId);
+    setShowFullSedView(selection.showFullSedView);
+  };
+
+  const handleToggleFullSedView = () => {
+    if (!showFullSedView) {
+      setShowFullSedView(Boolean(currentSedId));
+      return;
+    }
+    const firstLlave = sortLlaveIds(Object.keys(localDatabase[currentSedId]?.llaves || {}))[0] || '';
+    setCurrentLlaveId(currentLlaveId || firstLlave);
+    setShowFullSedView(false);
+  };
+
   useEffect(() => {
     if (!isSedRoute || deepLinkResolved || !mainDataLoaded || !isSupabaseSource) return;
     const resolution = resolveSedDeepLink(localDatabase, normalizedRequestedSedId);
     if (resolution.found) {
-      handleSedSelect(resolution.sedId);
+      if (isPresentationMode) handlePresentationSedSelect(resolution.sedId);
+      else handleSedSelect(resolution.sedId);
       setDeepLinkNotice(resolution.notice);
     } else {
       setDeepLinkNotice(resolution.notice);
     }
     setDeepLinkResolved(true);
-  }, [deepLinkResolved, isSedRoute, isSupabaseSource, localDatabase, mainDataLoaded, normalizedRequestedSedId]);
+  }, [deepLinkResolved, isPresentationMode, isSedRoute, isSupabaseSource, localDatabase, mainDataLoaded, normalizedRequestedSedId]);
 
   useEffect(() => {
     if (!deepLinkResolved || !mainDataLoaded || !isSupabaseSource) return;
@@ -1597,15 +1624,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     let newIndex = currentIndex + dir;
     if (newIndex < 0) newIndex = sedsList.length - 1;
     if (newIndex >= sedsList.length) newIndex = 0;
-    setCurrentSedId(sedsList[newIndex]);
-    
-    // Select first llave of the new SED
-    const llaves = Object.keys(localDatabase[sedsList[newIndex]].llaves || {});
-    if (llaves.length > 0) {
-      setCurrentLlaveId(llaves[0]);
-    } else {
-      setCurrentLlaveId('');
-    }
+    handlePresentationSedSelect(sedsList[newIndex]);
   }
 
   useEffect(() => {
@@ -1785,17 +1804,29 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function handleEnterEditMode() {
     const allowed = await checkEditPermission();
     if (allowed) {
+      const firstLlave = sortLlaveIds(Object.keys(localDatabase[currentSedId]?.llaves || {}))[0] || '';
+      setCurrentLlaveId(currentLlaveId || firstLlave);
+      setShowFullSedView(false);
       setIsPresentationMode(false);
+    }
+  }
+
+  function handleEnterPresentationMode() {
+    setIsPresentationMode(true);
+    if (currentSedId) {
+      setCurrentLlaveId('');
+      setShowFullSedView(true);
     }
   }
 
   async function handleImportMonthly(preview, { replace = false } = {}) {
     if (!isSupabaseSource || !periodSupport || !supabase) throw new Error('La carga mensual online requiere Base Principal y la migración de periodos aplicada.');
     await requireLifecycleSession();
+    const { rows: georeferencedRows } = await georeferenceMonthlyFaultRows(supabase, preview.rows);
     const { data, error } = await supabase.rpc('geopluz_import_fault_period', {
       p_period_key: preview.periodKey,
       p_label: preview.periodLabel,
-      p_rows: preview.rows,
+      p_rows: georeferencedRows,
       p_replace: Boolean(replace)
     });
     if (error) throw error;
@@ -1902,9 +1933,12 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           currentSedId={currentSedId}
           setCurrentSedId={handleSedSelect}
           currentLlaveId={currentLlaveId}
-          setCurrentLlaveId={setCurrentLlaveId}
+          setCurrentLlaveId={(llaveId) => {
+            setCurrentLlaveId(llaveId);
+            if (llaveId) setShowFullSedView(false);
+          }}
           showFullSedView={showFullSedView}
-          onToggleFullSedView={() => setShowFullSedView(value => !value)}
+          onToggleFullSedView={handleToggleFullSedView}
           currentTheme={currentTheme}
           setCurrentTheme={setCurrentTheme}
           currentMapStyle={currentMapStyle}
@@ -1934,7 +1968,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           onCancelEditCableGroup={handleCancelEditCableGroup}
           onSaveCableGroup={handleSaveCableGroup}
           onDeleteCableGroup={handleDeleteCableGroup}
-          onTogglePresentationMode={() => setIsPresentationMode(true)}
+          onTogglePresentationMode={handleEnterPresentationMode}
           onImportJson={handleImportJson}
           onImportJsonText={handleImportJsonText}
           onImportExcel={handleImportExcel}
@@ -2025,10 +2059,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             sedsList={sedsList}
             localDatabase={localDatabase}
             circuitEntries={circuitEntries}
-            circuitStatus={currentAnalysis.status}
-            onSelectSed={handleSedSelect}
-            onSelectLlave={(llaveId) => setCurrentLlaveId(llaveId)}
-            onSelectCircuit={(sedId, llaveId) => { setCurrentSedId(sedId); setCurrentLlaveId(llaveId); }}
+            showFullSedView={showFullSedView}
+            showAllLlavesOption
+            onSelectSed={handlePresentationSedSelect}
+            onSelectLlave={handlePresentationLlaveSelect}
             currentMapStyle={currentMapStyle}
             currentTheme={currentTheme}
             onPrevSed={() => navigateSed(-1)}
@@ -2038,7 +2072,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             onEnterEditMode={handleEnterEditMode}
           />
           <PresentationTablePanel
-            points={analysisSegmentFaultView.faults}
+            points={visibleFaultPoints}
             onRowClick={handleFlyToPoint}
             onExportExcel={handleExportExcel}
             onExportPdf={handleExportPdf}

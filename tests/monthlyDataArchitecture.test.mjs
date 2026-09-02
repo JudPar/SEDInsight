@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildSedFaultRanking, deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '../lib/faultPeriods.js';
-import { derivePeriodKeyFromStartTime, normalizeCallCount, prepareMonthlyFaultImport } from '../lib/monthlyFaultImport.js';
+import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeCallCount, prepareMonthlyFaultImport } from '../lib/monthlyFaultImport.js';
 import { normalizeCompensation, prepareMonthlyCompensationImport } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, sortSedPeriodMetrics, summarizeCompensationPeriods } from '../lib/sedMetrics.js';
 import { createWorkProjectConfig, validateWorkProjectConfig } from '../lib/workProjectConfig.js';
@@ -100,6 +100,71 @@ test('call count distinguishes zero from missing and rejects invalid values', ()
   ] }, Object.keys(seds));
   assert.equal(preview.periods[0].rows[0].call_count, 0);
   assert.equal(preview.periods[0].rows[1].call_count, null);
+});
+
+test('monthly supply aliases and spreadsheet representations use the shared normalization', () => {
+  const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [
+    { id: 'A', sed_id: '00338S', suministro: '123456' },
+    { id: 'B', sed_id: '00338S', suministro: ' 123456 ' },
+    { id: 'C', sed_id: '00338S', suministro: '123456.0' },
+    { id: 'D', sed_id: '00338S', NIS: '000123' }
+  ] }, Object.keys(seds));
+
+  assert.equal(preview.valid, true);
+  assert.deepEqual(preview.rows.map(row => row.suministro), ['123456', '123456', '123456', '000123']);
+});
+
+test('monthly rows are georeferenced read-only before the RPC and preserve existing coordinates', async () => {
+  const queries = [];
+  const client = {
+    from: table => {
+      assert.equal(table, 'suministros_coordenadas');
+      return {
+        select: columns => {
+          assert.equal(columns, 'suministro, latitud, longitud');
+          return {
+            in: async (column, values) => {
+              assert.equal(column, 'suministro');
+              queries.push([...values].sort());
+              return {
+                data: [
+                  { suministro: '123456', latitud: -12.05, longitud: -77.04 },
+                  { suministro: '000123', latitud: -11.9, longitud: -77.1 }
+                ],
+                error: null
+              };
+            }
+          };
+        }
+      };
+    }
+  };
+  const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [
+    { id: 'A', sed_id: '00338S', suministro: '123456' },
+    { id: 'B', sed_id: '00338S', suministro: ' 123456 ' },
+    { id: 'C', sed_id: '00338S', suministro: '123456.0' },
+    { id: 'D', sed_id: '00338S', nis: '000123' },
+    { id: 'E', sed_id: '00338S', suministro: '999999' },
+    { id: 'F', sed_id: '00338S', suministro: '123456', latitud: -10, longitud: -70 }
+  ] }, Object.keys(seds));
+  const { rows, summary } = await georeferenceMonthlyFaultRows(client, preview.rows);
+
+  assert.deepEqual(queries, [['000123', '123456', '999999']]);
+  assert.deepEqual(rows.slice(0, 3).map(row => [row.suministro, row.latitud, row.longitud, row.coord_source]), [
+    ['123456', -12.05, -77.04, 'SUMINISTRO_LOOKUP'],
+    ['123456', -12.05, -77.04, 'SUMINISTRO_LOOKUP'],
+    ['123456', -12.05, -77.04, 'SUMINISTRO_LOOKUP']
+  ]);
+  assert.deepEqual([rows[3].suministro, rows[3].latitud, rows[3].longitud, rows[3].coord_lookup_suministro], ['000123', -11.9, -77.1, '000123']);
+  assert.deepEqual([rows[4].latitud, rows[4].longitud, rows[4].coord_source], [null, null, null]);
+  assert.deepEqual([rows[5].latitud, rows[5].longitud, rows[5].coord_source], [-10, -70, 'ORIGINAL']);
+  assert.equal(Object.hasOwn(rows[0], 'coords'), false);
+  assert.equal(summary.automatic, 4);
+  assert.equal(summary.original, 1);
+  assert.equal(summary.withoutReference, 1);
+
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.match(page, /georeferenceMonthlyFaultRows\(supabase, preview\.rows\)[\s\S]*p_rows: georeferencedRows/);
 });
 
 test('compensation preview supports multiple months, zero and explicit conflicts', () => {

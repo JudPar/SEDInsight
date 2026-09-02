@@ -5,12 +5,12 @@ import dynamic from 'next/dynamic';
 import PresentationHUD from '@/components/PresentationHUD';
 import PresentationTablePanel from '@/components/PresentationTablePanel';
 import DataSourceBadge from '@/components/DataSourceBadge';
-import { sortSedIds } from '@/components/SearchableSedSelect';
+import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sortSedIds } from '@/lib/navigationSort';
 import { supabase } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getCachedSeds, getExpectedLocalProject, setCachedSeds } from '@/lib/dbCache';
-import { isSedMatch, isLlaveMatch } from '@/lib/sedUtils';
+import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { hydrateLlave } from '@/lib/circuitAnalysis';
 import { projectToInternalModel } from '@/lib/projectMappers';
 import { validateProject } from '@/lib/projectValidation';
@@ -27,6 +27,7 @@ export default function PresentacionPage() {
   // Estado de Navegación
   const [currentSedId, setCurrentSedId] = useState('');
   const [currentLlaveId, setCurrentLlaveId] = useState('');
+  const [showFullSedView, setShowFullSedView] = useState(true);
 
   // Estado UI
   const [currentTheme, setCurrentTheme] = useState('light');
@@ -71,7 +72,7 @@ export default function PresentacionPage() {
         const firstSed = Object.keys(model.localDatabase)[0];
         if (firstSed) {
           setCurrentSedId(firstSed);
-          setCurrentLlaveId(Object.keys(model.localDatabase[firstSed]?.llaves || {})[0] || '');
+          setCurrentLlaveId('');
         }
         return;
       }
@@ -152,8 +153,7 @@ export default function PresentacionPage() {
         const firstSed = Object.keys(db)[0];
         if (firstSed) {
            setCurrentSedId(firstSed);
-           const llaves = Object.keys(db[firstSed].llaves);
-           if (llaves.length > 0) setCurrentLlaveId(llaves[0]);
+           setCurrentLlaveId('');
         }
       }
     } catch (err) {
@@ -162,16 +162,11 @@ export default function PresentacionPage() {
   }
 
   // Filtrado flexible de Puntos de Falla por SED y Llave
-  const getFilteredPoints = useCallback(() => {
-    let list = numberedPointsList;
-    if (currentSedId) {
-      list = list.filter(pt => 
-        isSedMatch(pt.sed, pt.sedLlave, currentSedId) && 
-        isLlaveMatch(pt.llaveSistema, pt.sedLlave, currentLlaveId)
-      );
-    }
-    return list.map((pt, i) => ({ ...pt, localNumber: i + 1 }));
-  }, [numberedPointsList, currentSedId, currentLlaveId]);
+  const getFilteredPoints = useCallback(() => filterFaultsForCircuitView(numberedPointsList, {
+    sedId: currentSedId,
+    llaveId: currentLlaveId,
+    showFullSed: showFullSedView
+  }), [numberedPointsList, currentSedId, currentLlaveId, showFullSedView]);
 
   const filteredPoints = getFilteredPoints();
 
@@ -202,14 +197,10 @@ export default function PresentacionPage() {
     let newIndex = currentIndex + dir;
     if (newIndex < 0) newIndex = sedsList.length - 1;
     if (newIndex >= sedsList.length) newIndex = 0;
-    setCurrentSedId(sedsList[newIndex]);
-    
-    const llaves = Object.keys(localDatabase[sedsList[newIndex]].llaves || {});
-    if (llaves.length > 0) {
-      setCurrentLlaveId(llaves[0]);
-    } else {
-      setCurrentLlaveId('');
-    }
+    const selection = resolvePresentationSedSelection(sedsList[newIndex]);
+    setCurrentSedId(selection.sedId);
+    setCurrentLlaveId(selection.llaveId);
+    setShowFullSedView(selection.showFullSedView);
   }
 
   useEffect(() => {
@@ -226,6 +217,7 @@ export default function PresentacionPage() {
     : null;
 
   const currentSedCoord = localDatabase[currentSedId]?.sedCoord || null;
+  const sedOverviewLlaves = buildSedOverviewLlaves(localDatabase[currentSedId], currentLlaveId);
   const circuitEntries = Object.entries(localDatabase).flatMap(([sedId, sed]) => Object.entries(sed.llaves || {}).map(([llaveId, llave]) => ({
     sedId, llaveId, sedName: sed.name || sedId, status: llave.analysis?.status || 'cargado'
   })));
@@ -245,8 +237,11 @@ export default function PresentacionPage() {
           ref={mapRef}
           currentTheme={currentTheme}
           currentMapStyle={currentMapStyle}
-          circuitId={`${currentSedId}:${currentLlaveId}`}
+          circuitId={`${currentSedId}:${showFullSedView ? 'SED_COMPLETA' : currentLlaveId}`}
           llaveData={currentLlaveData}
+          sedOverviewLlaves={sedOverviewLlaves}
+          showFullSedView={showFullSedView}
+          selectedLlaveId={currentLlaveId}
           sedId={currentSedId}
           sedCoord={currentSedCoord}
           faultPoints={filteredPoints}
@@ -270,15 +265,19 @@ export default function PresentacionPage() {
         sedsList={sedsList}
         localDatabase={localDatabase}
         circuitEntries={circuitEntries}
-        circuitStatus={currentLlaveData?.analysis?.status || 'cargado'}
+        showFullSedView={showFullSedView}
+        showAllLlavesOption
         onSelectSed={(sedId) => {
-          setCurrentSedId(sedId);
-          const llaves = Object.keys(localDatabase[sedId]?.llaves || {});
-          if (llaves.length > 0) setCurrentLlaveId(llaves[0]);
-          else setCurrentLlaveId('');
+          const selection = resolvePresentationSedSelection(sedId);
+          setCurrentSedId(selection.sedId);
+          setCurrentLlaveId(selection.llaveId);
+          setShowFullSedView(selection.showFullSedView);
         }}
-        onSelectLlave={(llaveId) => setCurrentLlaveId(llaveId)}
-        onSelectCircuit={(sedId, llaveId) => { setCurrentSedId(sedId); setCurrentLlaveId(llaveId); }}
+        onSelectLlave={(llaveId) => {
+          const selection = resolvePresentationLlaveSelection(currentSedId, llaveId);
+          setCurrentLlaveId(selection.llaveId);
+          setShowFullSedView(selection.showFullSedView);
+        }}
         currentMapStyle={currentMapStyle}
         currentTheme={currentTheme}
         onPrevSed={() => navigateSed(-1)}

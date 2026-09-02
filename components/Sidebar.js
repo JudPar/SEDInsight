@@ -4,9 +4,10 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import FaultTable from './FaultTable';
 import ProjectPanel from './ProjectPanel';
 import DataManagementPanel from './DataManagementPanel';
-import SearchableSedSelect, { sortSedIds } from './SearchableSedSelect';
+import SearchableSedSelect from './SearchableSedSelect';
 import { CIRCUIT_STATUSES } from '@/lib/circuitAnalysis';
 import { describeParetoCandidates } from '@/lib/branchIndicators';
+import { sortLlaveIds, sortSedIds } from '@/lib/navigationSort';
 
 const CABLE_COLORS = ['#e53935', '#d81b60', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#546e7a'];
 
@@ -211,7 +212,7 @@ export default function Sidebar({
   const hasData = sedsList.length > 0;
   
   const currentLlaves = currentSedId && seds[currentSedId] && seds[currentSedId].llaves 
-    ? Object.keys(seds[currentSedId].llaves) 
+    ? sortLlaveIds(Object.keys(seds[currentSedId].llaves))
     : [];
 
   return (
