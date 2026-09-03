@@ -497,12 +497,24 @@ export default function Sidebar({
             {circuitPhase1Analysis && (
               <div style={{ marginTop: '8px', padding: '8px 9px', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '10.5px', lineHeight: 1.45 }}>
                 <div style={{ fontWeight: 700, color: 'var(--accent-cyan)', marginBottom: '5px' }}>Resultado del circuito seleccionado</div>
-                <div><b>Longitud almacenada:</b> {formatKilometers(circuitPhase1Analysis.storedLengthMeters)}</div>
-                <div><b>Longitud geográfica:</b> {formatKilometers(circuitPhase1Analysis.geographicLengthMeters)}</div>
-                <div><b>Segmentos físicos:</b> {circuitPhase1Analysis.physicalSegments}</div>
+                <div><b>Longitud total registrada:</b> {formatKilometers(circuitPhase1Analysis.registeredStoredLengthMeters ?? circuitPhase1Analysis.storedLengthMeters)}</div>
+                <div><b>Longitud analizable:</b> {formatKilometers(circuitPhase1Analysis.analyzableStoredLengthMeters ?? circuitPhase1Analysis.storedLengthMeters)}</div>
+                <div><b>Longitud geográfica analizable:</b> {formatKilometers(circuitPhase1Analysis.analyzableGeographicLengthMeters ?? circuitPhase1Analysis.geographicLengthMeters)}</div>
+                <div><b>Segmentos físicos analíticos:</b> {circuitPhase1Analysis.physicalSegments}</div>
                 <div><b>Duplicados ignorados:</b> {circuitPhase1Analysis.duplicatesIgnored}</div>
                 <div><b>Calibres detectados:</b> {circuitPhase1Analysis.detectedCalibres}</div>
                 <div><b>Sin calibre:</b> {circuitPhase1Analysis.segmentsWithoutCalibre}</div>
+
+                {circuitPhase1Analysis.usageSummary && (
+                  <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
+                    <div style={{ fontWeight: 700, marginBottom: '3px' }}>Uso de red</div>
+                    <div>Servicio Particular: {circuitPhase1Analysis.usageSummary.serviceParticular.segmentCount} tramos / {formatBranchMeters(circuitPhase1Analysis.usageSummary.serviceParticular.storedLengthMeters)}</div>
+                    <div>Cliente: {circuitPhase1Analysis.usageSummary.client.segmentCount} tramos / {formatBranchMeters(circuitPhase1Analysis.usageSummary.client.storedLengthMeters)}</div>
+                    <div>Secundario: {circuitPhase1Analysis.usageSummary.secondary.segmentCount} tramos / {formatBranchMeters(circuitPhase1Analysis.usageSummary.secondary.storedLengthMeters)}</div>
+                    <div>Otros/sin dato: {circuitPhase1Analysis.usageSummary.otherOrUnknown.segmentCount} tramos / {formatBranchMeters(circuitPhase1Analysis.usageSummary.otherOrUnknown.storedLengthMeters)}</div>
+                    <div style={{ marginTop: '3px' }}><b>Análisis:</b> Cliente excluidos: {circuitPhase1Analysis.analysisExcludedClientSegments} · {formatBranchMeters(circuitPhase1Analysis.excludedClientStoredLengthMeters)}</div>
+                  </div>
+                )}
 
                 {circuitPhase1Analysis.faultAssignment && (
                   <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
@@ -685,6 +697,7 @@ export default function Sidebar({
                   <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Detalles y advertencias</summary>
                   <div style={{ marginTop: '5px', color: 'var(--text-muted)' }}>
                     <div>Registros originales: {circuitPhase1Analysis.originalRecords}</div>
+                    <div>Segmentos físicos registrados: {circuitPhase1Analysis.registeredPhysicalSegments ?? circuitPhase1Analysis.physicalSegments}</div>
                     <div>Longitud original antes de deduplicar: {formatKilometers(circuitPhase1Analysis.originalStoredLengthMeters)}</div>
                     <div>Longitud cero o inválida: {circuitPhase1Analysis.zeroStoredLengthSegments + circuitPhase1Analysis.invalidStoredLengthSegments}</div>
                     <div>Candidatos no eléctricos: {circuitPhase1Analysis.nonElectricalCandidates}</div>

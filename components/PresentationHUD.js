@@ -3,14 +3,13 @@
 import { useMemo, useState } from 'react';
 import { CIRCUIT_STATUSES } from '@/lib/circuitAnalysis';
 import SearchableSedSelect from './SearchableSedSelect';
-import { sortLlaveIds } from '@/lib/navigationSort';
+import { filterLlaveIdsByStatus, filterSedsByCircuitStatus } from '@/lib/navigationSort';
 
 export default function PresentationHUD({
   sedId,
   llaveName,
   sedsList = [],
   localDatabase = {},
-  circuitEntries = [],
   showFullSedView = false,
   showAllLlavesOption = false,
   onSelectSed,
@@ -25,21 +24,28 @@ export default function PresentationHUD({
 }) {
   const [statusFilter, setStatusFilter] = useState('todos');
   const availableLlaves = useMemo(
-    () => sortLlaveIds(Object.keys(localDatabase[sedId]?.llaves || {})),
-    [localDatabase, sedId]
+    () => filterLlaveIdsByStatus(localDatabase[sedId]?.llaves || {}, statusFilter),
+    [localDatabase, sedId, statusFilter]
   );
-  const searchableSeds = useMemo(() => {
-    if (statusFilter === 'todos') return localDatabase;
-    const matchingSedIds = new Set(
-      circuitEntries
-        .filter(circuit => circuit.status === statusFilter)
-        .map(circuit => circuit.sedId)
-    );
-    return Object.fromEntries(
-      Object.entries(localDatabase).filter(([candidateSedId]) => matchingSedIds.has(candidateSedId))
-    );
-  }, [circuitEntries, localDatabase, statusFilter]);
+  const searchableSeds = useMemo(
+    () => filterSedsByCircuitStatus(localDatabase, statusFilter),
+    [localDatabase, statusFilter]
+  );
   const selectedLlaveValue = showAllLlavesOption && showFullSedView ? '' : (llaveName || '');
+  const selectedStatusKey = localDatabase[sedId]?.llaves?.[llaveName]?.analysis?.status || 'cargado';
+  const selectedStatus = CIRCUIT_STATUSES[selectedStatusKey] || CIRCUIT_STATUSES.cargado;
+
+  function handleStatusFilterChange(nextStatus) {
+    setStatusFilter(nextStatus);
+    if (
+      nextStatus !== 'todos' &&
+      llaveName &&
+      !showFullSedView &&
+      selectedStatusKey !== nextStatus
+    ) {
+      onSelectLlave?.('');
+    }
+  }
 
   return <div className="presentation-hud">
     <div className="hud-brand"><img src="/PLUZ.png" alt="PLUZ" /><div className="hud-badge"><i className="fa-solid fa-desktop"></i> PRESENTACIÓN</div></div>
@@ -51,20 +57,27 @@ export default function PresentationHUD({
           onChange={onSelectSed}
           compact
         />
-        <select
-          className="hud-llave-select"
-          value={selectedLlaveValue}
-          onChange={event => onSelectLlave?.(event.target.value)}
-          disabled={!sedId}
-          aria-label="Seleccionar llave"
-        >
-          {showAllLlavesOption && <option value="">Todas las llaves</option>}
-          {availableLlaves.map(llave => <option key={llave} value={llave}>{llave}</option>)}
-        </select>
+        <div className="hud-llave-control">
+          <select
+            className="hud-llave-select"
+            value={selectedLlaveValue}
+            onChange={event => onSelectLlave?.(event.target.value)}
+            disabled={!sedId}
+            aria-label="Seleccionar llave"
+          >
+            {showAllLlavesOption && <option value="">Todas las llaves</option>}
+            {availableLlaves.map(llave => {
+              const statusKey = localDatabase[sedId]?.llaves?.[llave]?.analysis?.status || 'cargado';
+              const status = CIRCUIT_STATUSES[statusKey] || CIRCUIT_STATUSES.cargado;
+              return <option key={llave} value={llave}>{llave} · {status.label}</option>;
+            })}
+          </select>
+          {!showFullSedView && llaveName && <span className="circuit-status-chip" style={{ '--status-color': selectedStatus.color }}>{selectedStatus.label}</span>}
+        </div>
         <select
           className="hud-status-select"
           value={statusFilter}
-          onChange={event => setStatusFilter(event.target.value)}
+          onChange={event => handleStatusFilterChange(event.target.value)}
           aria-label="Filtrar por estado"
         >
           <option value="todos">Todos los estados</option>

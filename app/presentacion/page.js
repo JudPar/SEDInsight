@@ -218,9 +218,6 @@ export default function PresentacionPage() {
 
   const currentSedCoord = localDatabase[currentSedId]?.sedCoord || null;
   const sedOverviewLlaves = buildSedOverviewLlaves(localDatabase[currentSedId], currentLlaveId);
-  const circuitEntries = Object.entries(localDatabase).flatMap(([sedId, sed]) => Object.entries(sed.llaves || {}).map(([llaveId, llave]) => ({
-    sedId, llaveId, sedName: sed.name || sedId, status: llave.analysis?.status || 'cargado'
-  })));
 
   return (
     <>
@@ -264,7 +261,6 @@ export default function PresentacionPage() {
         llaveName={currentLlaveId || ''}
         sedsList={sedsList}
         localDatabase={localDatabase}
-        circuitEntries={circuitEntries}
         showFullSedView={showFullSedView}
         showAllLlavesOption
         onSelectSed={(sedId) => {

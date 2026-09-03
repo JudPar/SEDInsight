@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  filterLlaveIdsByStatus,
+  filterSedsByCircuitStatus,
   resolvePresentationLlaveSelection,
   resolvePresentationSedSelection,
   sortLlaveIds
@@ -9,6 +11,17 @@ import {
 
 test('llaves use stable natural alphanumeric ordering', () => {
   assert.deepEqual(sortLlaveIds(['T-10', 'T-2', 'T-03', 'T-01']), ['T-01', 'T-2', 'T-03', 'T-10']);
+});
+
+test('status filter visibly limits SED and llave navigation options', () => {
+  const database = {
+    SED1: { llaves: { 'T-10': { analysis: { status: 'en_proceso' } }, 'T-02': { analysis: { status: 'cargado' } } } },
+    SED2: { llaves: { 'T-01': { analysis: { status: 'analizado' } } } }
+  };
+
+  assert.deepEqual(filterLlaveIdsByStatus(database.SED1.llaves, 'cargado'), ['T-02']);
+  assert.deepEqual(Object.keys(filterSedsByCircuitStatus(database, 'cargado')), ['SED1']);
+  assert.deepEqual(filterLlaveIdsByStatus(database.SED1.llaves, 'todos'), ['T-02', 'T-10']);
 });
 
 test('selecting any SED starts in full SED view with no stale llave', () => {
@@ -45,8 +58,10 @@ test('presentation HUD orders SED search, llave selector and status filter witho
 
   assert.ok(searchPosition >= 0 && searchPosition < llavePosition && llavePosition < statusPosition);
   assert.match(hud, /compact/);
-  assert.match(hud, /sortLlaveIds/);
+  assert.match(hud, /filterLlaveIdsByStatus/);
   assert.match(hud, /Todas las llaves/);
+  assert.match(hud, /circuit-status-chip/);
+  assert.match(hud, /filterLlaveIdsByStatus/);
   assert.doesNotMatch(hud, /hud-title|SED \{cleanSed\}/);
 });
 

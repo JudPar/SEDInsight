@@ -11,7 +11,8 @@ import {
   getLineCalibreDisplay,
   hydrateLlave,
   normalizeCalibreLabel,
-  resolveLineCalibre
+  resolveLineCalibre,
+  resolveLineUsage
 } from '../lib/circuitAnalysis.js';
 import { classifyExternalReference, safeExternalNavigationUrl } from '../lib/externalAssetSafety.js';
 import { buildAnalysisBranchFaultView, calculateBranchIndicators, calculateParetoPriority, describeParetoCandidates, resolveAnalysisBranch } from '../lib/branchIndicators.js';
@@ -212,6 +213,126 @@ test('phase 1 always excludes its marker and tolerates malformed records', () =>
   assert.equal(result.invalidStoredLengthSegments, 1);
   assert.equal(result.zeroStoredLengthSegments, 1);
   assert.deepEqual(analyzeCircuitPhase1(linesData), result);
+});
+
+test('structured usage has priority, properties Uso is the fallback and missing usage stays unclassified', () => {
+  assert.deepEqual(resolveLineUsage({ usage: '  Cliente  ', properties: { Uso: 'Servicio Particular' } }), {
+    source: 'line.usage',
+    raw: '  Cliente  ',
+    displayLabel: 'Cliente',
+    normalizedLabel: 'CLIENTE'
+  });
+  assert.deepEqual(resolveLineUsage({ properties: { Uso: '  Servicio   Particular ' } }), {
+    source: 'properties.Uso',
+    raw: '  Servicio   Particular ',
+    displayLabel: 'Servicio Particular',
+    normalizedLabel: 'SERVICIO PARTICULAR'
+  });
+  assert.deepEqual(resolveLineUsage({}), {
+    source: null,
+    raw: null,
+    displayLabel: null,
+    normalizedLabel: ''
+  });
+});
+
+test('Cliente remains in the original network but is excluded before topology, calibre and fault assignment', () => {
+  const lines = [
+    { id: 'network', usage: 'Servicio Particular', cableType: 'NYY 3x10', coords: [[0, 0], [0, 0.0005], [0, 0.001]], length: 100 },
+    { id: 'client', usage: 'Cliente', cableType: 'CLIENT CABLE', coords: [[0, 0.0005], [0.00005, 0.0005]], length: 5 },
+    { id: 'secondary', usage: 'Secundario', cableType: 'NYY 3x10', coords: [[0, 0.001], [0.00018, 0.001]], length: 20 }
+  ];
+  const fault = { id: 'F-CLIENT', coords: [0.00005, 0.0005], causa: 'Prueba' };
+  const result = analyzeCircuit(lines, [fault], { rootCoordinate: [0, 0] });
+  const baseline = analyzeCircuit([lines[0], lines[2]], [fault], { rootCoordinate: [0, 0] });
+  const assignment = result.faultAssignment.assignments[0];
+
+  assert.equal(result.originalRecords, 3);
+  assert.equal(result.registeredPhysicalSegments, 3);
+  assert.equal(result.physicalSegments, 2);
+  assert.equal(result.analysisExcludedClientSegments, 1);
+  assert.equal(result.analysisExclusions[0].reason, 'CLIENT_SERVICE');
+  assert.equal(result.originalPhysicalSegmentRecords.find(item => item.lineId === 'client').analysisExcluded, true);
+  assert.equal(result.physicalSegmentRecords.some(item => item.lineId === 'client'), false);
+  assert.equal(result.topology.originalEdges.some(edge => edge.usage === 'CLIENTE'), false);
+  assert.equal(result.topology.originalEdges.some(edge => edge.usage === 'SECUNDARIO'), true);
+  assert.deepEqual(result.topology, baseline.topology);
+  assert.equal(result.lengthByCalibre.some(item => item.normalizedLabel === 'CLIENT CABLE'), false);
+  assert.equal(assignment.lineId, 'network');
+  assert.ok(assignment.distanceMeters > 5 && assignment.distanceMeters < 6);
+  assert.equal(result.registeredStoredLengthMeters, 125);
+  assert.equal(result.analyzableStoredLengthMeters, 120);
+  assert.equal(result.excludedClientStoredLengthMeters, 5);
+});
+
+test('networks without usage preserve the previous analytical behavior and terminal-spur fallback', () => {
+  const meter = 1 / 111195.08;
+  const lines = [
+    { id: 'main-west', coords: [[0, 0], [0, -30 * meter]], length: 30 },
+    { id: 'main-east', coords: [[0, 0], [0, 30 * meter]], length: 30 },
+    { id: 'short-spur', coords: [[0, 0], [10 * meter, 0]], length: 10 }
+  ];
+  const result = analyzeCircuit(lines, []);
+
+  assert.equal(result.registeredPhysicalSegments, 3);
+  assert.equal(result.physicalSegments, 3);
+  assert.equal(result.analysisExcludedClientSegments, 0);
+  assert.equal(result.usageSummary.otherOrUnknown.segmentCount, 3);
+  assert.equal(result.topology.terminalSpurCount, 1);
+});
+
+test('21949A usage regression leaves zero Cliente edges in the analytical graph', () => {
+  const makeLine = (index, usage, length = 20) => ({
+    id: `21949A-${index}`,
+    usage,
+    cableType: 'Conductor BT Estándar',
+    coords: [[index * 0.001, 0], [index * 0.001, 0.0002]],
+    length
+  });
+  const lines = [
+    ...Array.from({ length: 354 }, (_, index) => makeLine(index, 'Servicio Particular')),
+    ...Array.from({ length: 135 }, (_, index) => makeLine(354 + index, 'Cliente', 5)),
+    ...Array.from({ length: 2 }, (_, index) => makeLine(489 + index, 'Secundario', 1))
+  ];
+  const result = analyzeCircuit(lines, []);
+
+  assert.equal(result.originalRecords, 491);
+  assert.equal(result.registeredPhysicalSegments, 491);
+  assert.equal(result.analysisExcludedClientSegments, 135);
+  assert.equal(result.physicalSegments, 356);
+  assert.equal(result.usageSummary.serviceParticular.segmentCount, 354);
+  assert.equal(result.usageSummary.client.segmentCount, 135);
+  assert.equal(result.usageSummary.secondary.segmentCount, 2);
+  assert.equal(result.topology.originalEdges.filter(edge => edge.usage === 'CLIENTE').length, 0);
+  assert.equal(result.topology.originalEdges.filter(edge => edge.usage === 'SECUNDARIO').length, 2);
+});
+
+test('usage and Cliente geometry survive canonical project round-trip unchanged', async () => {
+  const linesData = [
+    { id: 'client', usage: 'Cliente', cableType: 'CNX 2x6', coords: [[-12, -77], [-12.00001, -77]], properties: { Uso: 'Cliente', keep: true } },
+    { id: 'network', properties: { Uso: 'Servicio Particular', keep: true }, coords: [[-12, -77], [-12, -76.999]] }
+  ];
+  const project = await createProjectDocument(databaseWithLinesData(linesData), []);
+  const restored = projectToInternalModel(project);
+  const secondExport = await createProjectDocument(restored.localDatabase, restored.numberedPointsList);
+
+  assert.equal((await validateProject(project)).valid, true);
+  assert.deepEqual(project.llaves[0].lines_data, linesData);
+  assert.deepEqual(secondExport.llaves[0].lines_data, linesData);
+  assert.equal(secondExport.llaves[0].lines_data[0].usage, 'Cliente');
+  assert.equal(secondExport.llaves[0].lines_data[0].cableType, 'CNX 2x6');
+  const mapSource = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
+  assert.match(mapSource, /entry\.lines\.forEach/);
+  assert.doesNotMatch(mapSource, /filter\([^\n]*usage/);
+});
+
+test('circuit analysis summary distinguishes registered, excluded and analyzable usage', () => {
+  const source = readFileSync(new URL('../components/Sidebar.js', import.meta.url), 'utf8');
+  assert.match(source, /Uso de red/);
+  assert.match(source, /Servicio Particular:/);
+  assert.match(source, /Cliente excluidos:/);
+  assert.match(source, /Longitud total registrada:/);
+  assert.match(source, /Longitud analizable:/);
 });
 
 test('phase 2 projects onto the middle of a segment instead of using only vertices', () => {

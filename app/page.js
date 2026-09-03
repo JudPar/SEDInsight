@@ -1667,9 +1667,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       .map(edgeId => circuitPhase1Analysis?.topology?.originalEdges?.find(edge => edge.edgeId === edgeId))
       .filter(Boolean)
     : [];
-  const circuitEntries = Object.entries(localDatabase).flatMap(([sedId, sed]) => Object.entries(sed.llaves || {}).map(([llaveId, llave]) => ({
-    sedId, llaveId, sedName: sed.name || sedId, status: llave.analysis?.status || 'cargado'
-  })));
   const selectedDistance = (currentLlaveData?.lines || [])
     .filter((line, index) => selectedLineIds.includes(String(line.id ?? index)))
     .reduce((total, line) => total + (Number(line.length) || 0), 0);
@@ -2058,7 +2055,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             llaveName={currentLlaveId || ''}
             sedsList={sedsList}
             localDatabase={localDatabase}
-            circuitEntries={circuitEntries}
             showFullSedView={showFullSedView}
             showAllLlavesOption
             onSelectSed={handlePresentationSedSelect}
