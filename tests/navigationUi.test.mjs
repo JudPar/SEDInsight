@@ -8,6 +8,14 @@ import {
   resolvePresentationSedSelection,
   sortLlaveIds
 } from '../lib/navigationSort.js';
+import { getDrawableLineCoordinates } from '../lib/coordUtils.js';
+
+function sourceSection(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.ok(startIndex >= 0 && endIndex > startIndex, `Missing source section: ${start}`);
+  return source.slice(startIndex, endIndex);
+}
 
 test('llaves use stable natural alphanumeric ordering', () => {
   assert.deepEqual(sortLlaveIds(['T-10', 'T-2', 'T-03', 'T-01']), ['T-01', 'T-2', 'T-03', 'T-10']);
@@ -73,4 +81,61 @@ test('editing and presentation selectors share natural sorting without changing 
   assert.match(page, /analyzeCircuit\(linesData, selectedLlavePoints,/);
   assert.match(page, /showFullSedView \? fullSedPoints : analysisSegmentFaultView\.faults/);
   assert.match(page, /points=\{visibleFaultPoints\}/);
+});
+
+test('SED and llave changes preserve the current edit or presentation mode', () => {
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const sedSelection = sourceSection(page, 'const handleSedSelect', 'const handlePresentationSedSelect');
+  const llaveSelection = sourceSection(page, 'const handleEditLlaveSelect', 'const handleToggleFullSedView');
+
+  assert.doesNotMatch(sedSelection, /setIsPresentationMode/);
+  assert.doesNotMatch(llaveSelection, /setIsPresentationMode/);
+  assert.match(sedSelection, /runNavigationTransition\('Cargando SED\.\.\.'/);
+  assert.match(llaveSelection, /runNavigationTransition\('Cargando circuito\.\.\.'/);
+});
+
+test('mode toggles repeatedly change only the explicit presentation flag', () => {
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const enterEdit = sourceSection(page, 'async function handleEnterEditMode', 'function handleEnterPresentationMode');
+  const enterPresentation = sourceSection(page, 'function handleEnterPresentationMode', 'async function handleImportMonthly');
+
+  assert.match(enterEdit, /setIsPresentationMode\(false\)/);
+  assert.match(enterPresentation, /setIsPresentationMode\(true\)/);
+  assert.doesNotMatch(`${enterEdit}${enterPresentation}`, /setCurrentSedId|setCurrentLlaveId|setShowFullSedView/);
+});
+
+test('loading feedback covers navigation and circuit analysis and always clears analysis loading', () => {
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const analysis = sourceSection(page, 'async function handleAnalyzeCurrentCircuit', 'function handleSelectAnalysisSegment');
+
+  assert.match(page, /frontend-loading-status/);
+  assert.match(page, /Analizando circuito\.\.\./);
+  assert.match(page, /isNavigationPending/);
+  assert.match(analysis, /try\s*\{/);
+  assert.match(analysis, /finally\s*\{\s*setIsAnalyzingCircuit\(false\)/);
+});
+
+test('sidebar owns one stable vertical scroll area for dynamically growing analysis', () => {
+  const css = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8');
+  const sidebar = sourceSection(css, '#sidebar, .sidebar {', '.header-brand {');
+  const content = sourceSection(css, '.sidebar-content {', '/* === CARDS === */');
+
+  assert.match(sidebar, /min-height:\s*0/);
+  assert.match(sidebar, /overflow:\s*hidden/);
+  assert.match(content, /overflow-y:\s*auto/);
+  assert.match(content, /overflow-x:\s*hidden/);
+  assert.match(content, /min-height:\s*0/);
+  assert.match(css, /\.sidebar-section\s*\{[^}]*flex:\s*0 0 auto/s);
+});
+
+test('map drawing rejects incomplete geometry instead of throwing during mode changes', () => {
+  assert.deepEqual(getDrawableLineCoordinates(null), []);
+  assert.deepEqual(getDrawableLineCoordinates([]), []);
+  assert.deepEqual(getDrawableLineCoordinates([[-12, -77]]), []);
+  assert.deepEqual(getDrawableLineCoordinates([[-12, -77], null]), []);
+  assert.deepEqual(getDrawableLineCoordinates([[-12, -77], ['bad', -77]]), []);
+  assert.deepEqual(getDrawableLineCoordinates([[-12, -77], [-12.1, -77.1]]), [[-12, -77], [-12.1, -77.1]]);
+
+  const map = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
+  assert.match(map, /Array\.isArray\(llaveData\?\.lines\)/);
 });

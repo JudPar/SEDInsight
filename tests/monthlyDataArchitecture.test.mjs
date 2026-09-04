@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildSedFaultRanking, deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '../lib/faultPeriods.js';
-import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeCallCount, prepareMonthlyFaultImport } from '../lib/monthlyFaultImport.js';
+import { buildSedFaultRanking, deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, resolveActivePeriodSelection, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '../lib/faultPeriods.js';
+import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeCallCount, normalizeFaultCause, prepareMonthlyFaultImport } from '../lib/monthlyFaultImport.js';
 import { normalizeCompensation, prepareMonthlyCompensationImport } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, sortSedPeriodMetrics, summarizeCompensationPeriods } from '../lib/sedMetrics.js';
 import { createWorkProjectConfig, validateWorkProjectConfig } from '../lib/workProjectConfig.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
+import { getCauseCategory } from '../lib/constants.js';
 
 const seds = {
   '00338S': { name: 'SED 338', llaves: { A: {}, B: {} } },
@@ -15,14 +16,15 @@ const seds = {
 };
 
 function monthlyInput(period = '2026-09') {
+  const startTime = `${period}-01 08:00`;
   return {
     period_key: period,
     fallas: [
-      { id: 'SRC-1', sed_id: '00338S', llave_code: 'A', ticket: 'T-1', latitud: -12.1, longitud: -77.1 },
-      { id: 'SRC-2', sed_id: '00813S', llave_code: 'C', ticket: 'T-2' },
-      { id: 'SRC-3', sed_id: 'FUERA', ticket: 'T-3' },
-      { id: 'SRC-1', sed_id: '00338S', llave_code: 'A', ticket: 'T-1-DUP' },
-      { id: 'INVALID', ticket: 'T-4' }
+      { id: 'SRC-1', sed_id: '00338S', llave_code: 'A', ticket: 'T-1', latitud: -12.1, longitud: -77.1, hora_inicio: startTime },
+      { id: 'SRC-2', sed_id: '00813S', llave_code: 'C', ticket: 'T-2', hora_inicio: startTime },
+      { id: 'SRC-3', sed_id: 'FUERA', ticket: 'T-3', hora_inicio: startTime },
+      { id: 'SRC-1', sed_id: '00338S', llave_code: 'A', ticket: 'T-1-DUP', hora_inicio: startTime },
+      { id: 'INVALID', ticket: 'T-4', hora_inicio: startTime }
     ]
   };
 }
@@ -64,15 +66,15 @@ test('mixed-month JSON is grouped into independent period previews', () => {
   assert.equal(preview.periodCount, 2);
 });
 
-test('conflicting explicit row period and Hora de inicio is rejected instead of silently reassigned', () => {
+test('Hora de inicio is authoritative when an explicit period conflicts', () => {
   const preview = prepareMonthlyFaultImport({ fallas: [{ id: 'A', sed_id: '00338S', period_key: '2026-09', hora_inicio: '15/08/2026 14:32' }] }, Object.keys(seds));
-  assert.equal(preview.valid, false);
-  assert.equal(preview.invalid, 1);
-  assert.equal(preview.diagnostics.invalidRows[0].reason, 'period_conflict');
+  assert.equal(preview.valid, true);
+  assert.equal(preview.periodKey, '2026-08');
+  assert.equal(preview.rows[0].period_key, '2026-08');
 });
 
 test('monthly rows without a stable source identity are accepted with an explicit warning', () => {
-  const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [{ sed_id: '00338S' }] }, Object.keys(seds));
+  const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [{ sed_id: '00338S', hora_inicio: '01/09/2026' }] }, Object.keys(seds));
   assert.equal(preview.accepted, 1);
   assert.equal(preview.ambiguousIdentities, 1);
 });
@@ -90,6 +92,14 @@ test('default period selection uses the newest two months and formats the interv
   assert.match(formatSelectedPeriodLabel(['2026-08', '2026-09']), /2 meses/);
 });
 
+test('manual period selection survives refreshes while defaults still use the newest two months', () => {
+  const periods = ['2026-07', '2026-09', '2026-08'].map(periodKey => ({ periodKey }));
+  assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: false }), ['2026-09', '2026-08']);
+  assert.deepEqual(resolveActivePeriodSelection(periods, ['2026-08'], { preserveSelection: true }), ['2026-08']);
+  assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: true }), []);
+  assert.deepEqual(resolveActivePeriodSelection(periods, ['2026-06', '2026-07'], { preserveSelection: true }), ['2026-07']);
+});
+
 test('call count distinguishes zero from missing and rejects invalid values', () => {
   assert.deepEqual(normalizeCallCount(0), { valid: true, value: 0, provided: true });
   assert.equal(normalizeCallCount(null).provided, false);
@@ -102,12 +112,27 @@ test('call count distinguishes zero from missing and rejects invalid values', ()
   assert.equal(preview.periods[0].rows[1].call_count, null);
 });
 
+test('missing cause remains empty and never falls back to Deterioro or ENVEJECIMIENTO', () => {
+  const preview = prepareMonthlyFaultImport({ fallas: [
+    { id: 'A', sed_id: '00338S', hora_inicio: '01/08/2026' },
+    { id: 'B', sed_id: '00338S', hora_inicio: '01/08/2026', diagnostico: ' Humedad ' }
+  ] }, Object.keys(seds));
+
+  assert.equal(preview.rows[0].causa, null);
+  assert.equal(preview.rows[1].causa, 'Humedad');
+  assert.equal(normalizeFaultCause(null), '');
+  assert.notEqual(getCauseCategory('Deterioro').id, 'ENVEJECIMIENTO');
+  assert.equal(getCauseCategory('ENVEJECIMIENTO').id, 'ENVEJECIMIENTO');
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(page, /causa:\s*String\([^\n]+\|\|\s*'Deterioro'/);
+});
+
 test('monthly supply aliases and spreadsheet representations use the shared normalization', () => {
   const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [
-    { id: 'A', sed_id: '00338S', suministro: '123456' },
-    { id: 'B', sed_id: '00338S', suministro: ' 123456 ' },
-    { id: 'C', sed_id: '00338S', suministro: '123456.0' },
-    { id: 'D', sed_id: '00338S', NIS: '000123' }
+    { id: 'A', sed_id: '00338S', suministro: '123456', hora_inicio: '01/09/2026' },
+    { id: 'B', sed_id: '00338S', suministro: ' 123456 ', hora_inicio: '01/09/2026' },
+    { id: 'C', sed_id: '00338S', suministro: '123456.0', hora_inicio: '01/09/2026' },
+    { id: 'D', sed_id: '00338S', NIS: '000123', hora_inicio: '01/09/2026' }
   ] }, Object.keys(seds));
 
   assert.equal(preview.valid, true);
@@ -140,12 +165,12 @@ test('monthly rows are georeferenced read-only before the RPC and preserve exist
     }
   };
   const preview = prepareMonthlyFaultImport({ period_key: '2026-09', fallas: [
-    { id: 'A', sed_id: '00338S', suministro: '123456' },
-    { id: 'B', sed_id: '00338S', suministro: ' 123456 ' },
-    { id: 'C', sed_id: '00338S', suministro: '123456.0' },
-    { id: 'D', sed_id: '00338S', nis: '000123' },
-    { id: 'E', sed_id: '00338S', suministro: '999999' },
-    { id: 'F', sed_id: '00338S', suministro: '123456', latitud: -10, longitud: -70 }
+    { id: 'A', sed_id: '00338S', suministro: '123456', hora_inicio: '01/09/2026' },
+    { id: 'B', sed_id: '00338S', suministro: ' 123456 ', hora_inicio: '01/09/2026' },
+    { id: 'C', sed_id: '00338S', suministro: '123456.0', hora_inicio: '01/09/2026' },
+    { id: 'D', sed_id: '00338S', nis: '000123', hora_inicio: '01/09/2026' },
+    { id: 'E', sed_id: '00338S', suministro: '999999', hora_inicio: '01/09/2026' },
+    { id: 'F', sed_id: '00338S', suministro: '123456', latitud: -10, longitud: -70, hora_inicio: '01/09/2026' }
   ] }, Object.keys(seds));
   const { rows, summary } = await georeferenceMonthlyFaultRows(client, preview.rows);
 
@@ -198,6 +223,33 @@ test('SED metrics aggregate selected periods and expose missing coverage without
   assert.equal(sed338.compensationDataComplete, false);
   assert.equal(sortSedPeriodMetrics(metrics, 'callCount')[0].sedId, '00813S');
   assert.deepEqual(summarizeCompensationPeriods([{ sedId: '00338S', periodKey: '2026-08', compensation: 0 }])[0], { periodKey: '2026-08', sedCount: 1, totalCompensation: 0 });
+});
+
+test('one temporal selection updates faults, calls, ranking and compensation together', () => {
+  const faults = [
+    { id: 1, sed: '00338S', periodKey: '2026-07', callCount: 2 },
+    { id: 2, sed: '00338S', periodKey: '2026-08', callCount: 5 },
+    { id: 3, sed: '00813S', periodKey: '2026-07', callCount: 9 }
+  ];
+  const compensation = [
+    { sedId: '00338S', periodKey: '2026-07', compensation: 10 },
+    { sedId: '00338S', periodKey: '2026-08', compensation: 20 },
+    { sedId: '00813S', periodKey: '2026-07', compensation: 30 }
+  ];
+  const julyAndAugust = ['2026-07', '2026-08'];
+  const augustOnly = ['2026-08'];
+  const allActive = filterFaultsByPeriods(faults, julyAndAugust);
+  const augustActive = filterFaultsByPeriods(faults, augustOnly);
+  const allMetrics = buildSedPeriodMetrics(seds, allActive, compensation, julyAndAugust);
+  const augustMetrics = buildSedPeriodMetrics(seds, augustActive, compensation, augustOnly);
+  const all338 = allMetrics.find(item => item.sedId === '00338S');
+  const august338 = augustMetrics.find(item => item.sedId === '00338S');
+
+  assert.equal(allActive.length, 3);
+  assert.equal(augustActive.length, 1);
+  assert.deepEqual([all338.faultCount, all338.callCount, all338.compensation], [2, 7, 30]);
+  assert.deepEqual([august338.faultCount, august338.callCount, august338.compensation], [1, 5, 20]);
+  assert.equal(sortSedPeriodMetrics(augustMetrics, 'faultCount')[0].sedId, '00338S');
 });
 
 test('manual period selection filters faults and preserves unassigned compatibility', () => {
@@ -264,9 +316,12 @@ test('period-selected faults are the only input wired to circuit and SED filters
   assert.match(page, /\.in\('period_key', monthlyKeys\)/);
   assert.match(page, /\.is\('period_key', null\)/);
   assert.match(page, /periodFilteredPoints = deduplicateSelectedFaults\(filterFaultsByPeriods/);
+  assert.match(page, /faultPoints=\{periodFilteredPoints\}/);
   assert.match(page, /selectedLlavePoints = filterFaultsForCircuitView\(periodFilteredPoints/);
   assert.match(page, /analyzeCircuit\(linesData, selectedLlavePoints/);
   assert.match(page, /await handleChangeSelectedPeriods\(availablePeriods\)/);
+  assert.match(page, /hasManualPeriodSelectionRef\.current/);
+  assert.match(page, /selectedPeriodKeysRef\.current/);
 });
 
 test('migration is additive, period-scoped and never writes the supply master', () => {

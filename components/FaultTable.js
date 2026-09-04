@@ -64,7 +64,7 @@ export default function FaultTable({ points = [], faultAssignments = [], showAct
           {!hasCoords && <small className="warning">Sin GPS</small>}
           {circuitAssignment?.distanceMeters !== undefined && (
             <small title="Distancia al segmento físico más cercano">
-              {circuitAssignment.distanceMeters.toFixed(1)} m · {CONFIDENCE_LABELS[circuitAssignment.confidence]}
+              {circuitAssignment.distanceMeters.toFixed(1)} m · {circuitAssignment.unassigned_reason === 'TOO_FAR_FROM_NETWORK' ? 'Fuera de red' : CONFIDENCE_LABELS[circuitAssignment.confidence]}
             </small>
           )}
           {circuitAssignment?.junctionFault === true && (

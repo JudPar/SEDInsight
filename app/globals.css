@@ -67,6 +67,11 @@ body {
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   z-index: 1000;
   box-shadow: none;
   transition: background-color 0.3s;
@@ -124,7 +129,13 @@ body {
 .sidebar-content {
   padding: 10px;
   overflow-y: auto;
+  overflow-x: hidden;
   flex: 1;
+  min-height: 0;
+  min-width: 0;
+  align-items: stretch;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -602,6 +613,8 @@ select.input-control option {
   border-radius: 6px;
   background: var(--bg-card);
   overflow: visible;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .sidebar-section > summary {
@@ -625,9 +638,14 @@ select.input-control option {
 .sidebar-section[open] > summary { border-bottom: 1px solid var(--border-color); }
 .section-chevron { font-size: 10px; color: var(--text-muted); transition: transform .18s ease; }
 .sidebar-section[open] .section-chevron { transform: rotate(180deg); }
-.section-block { padding: 11px 12px; }
+.section-block { padding: 11px 12px; min-width: 0; overflow-wrap: anywhere; }
+.section-block input, .section-block select, .section-block textarea, .section-block button { max-width: 100%; }
 .section-block + .section-block { border-top: 1px solid var(--border-color); }
 .mode-switch-btn { color: var(--accent-warning); border-color: var(--accent-warning); }
+
+.frontend-loading-status { position: fixed; top: 66px; left: 50%; transform: translateX(-50%); z-index: 10040; display: flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--accent-cyan); border-radius: 999px; background: var(--bg-card); color: var(--text-main); box-shadow: 0 4px 18px rgba(0,0,0,.18); font-size: 11px; font-weight: 700; pointer-events: none; }
+.frontend-loading-spinner { width: 13px; height: 13px; border: 2px solid rgba(0,119,194,.25); border-top-color: var(--accent-cyan); border-radius: 50%; animation: frontend-loading-spin .7s linear infinite; }
+@keyframes frontend-loading-spin { to { transform: rotate(360deg); } }
 
 /* === SEARCHABLE SED SELECT === */
 .sed-search { position: relative; flex: 1; min-width: 0; }

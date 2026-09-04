@@ -520,7 +520,11 @@ export default function Sidebar({
                   <div style={{ marginTop: '7px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)' }}>
                     <div style={{ fontWeight: 700, marginBottom: '3px' }}>Asignación de fallas</div>
                     <div>Fallas del circuito: {circuitPhase1Analysis.faultAssignment.totalFaults}</div>
+                    <div>Asignadas a la red analítica: {circuitPhase1Analysis.faultAssignment.assigned}</div>
                     <div>Asignadas a tramos: {circuitPhase1Analysis.analysisSegmentIndicators?.faultsAssignedToAnalysisSegments ?? 0}</div>
+                    <div>Reubicadas vía Cliente: {circuitPhase1Analysis.faultAssignment.analyticallyRelocated ?? 0}</div>
+                    <div>Sin asignar por distancia: {circuitPhase1Analysis.faultAssignment.tooFarFromNetwork ?? 0}</div>
+                    {(circuitPhase1Analysis.faultAssignment.ambiguousClientConnections ?? 0) > 0 && <div>Conexión Cliente ambigua: {circuitPhase1Analysis.faultAssignment.ambiguousClientConnections}</div>}
                     <div>Fallas en nodos/bifurcaciones: {circuitPhase1Analysis.faultAssignment.junctionFaults}</div>
                     <div>Sin coordenadas: {circuitPhase1Analysis.faultAssignment.missingCoordinates}</div>
                     <div>Alta confianza: {circuitPhase1Analysis.faultAssignment.highConfidence}</div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react';
-import { fixCoord, getWeightForZoom } from '@/lib/coordUtils';
+import { fixCoord, getDrawableLineCoordinates, getWeightForZoom } from '@/lib/coordUtils';
 import { TILE_LAYERS, MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, FAULT_CAUSES, DEFAULT_CAUSE_COLOR, getCauseCategory } from '@/lib/constants';
 import { getSpiderfyPositions, groupOverlappingPoints } from '@/lib/overlappingMarkers';
 import { safeExternalImageSource, safeExternalNavigationUrl } from '@/lib/externalAssetSafety';
@@ -341,16 +341,16 @@ const MapViewer = forwardRef(({
         isSelected: true
       }] : [];
 
-    if (networkLlaves.some(entry => entry.lines.length > 0)) {
+    if (networkLlaves.some(entry => Array.isArray(entry?.lines) && entry.lines.length > 0)) {
       const lineColor = currentTheme === 'dark' ? '#00e5ff' : '#0077c2';
       const zoom = mapInstanceRef.current.getZoom();
       const weight = getWeightForZoom(zoom);
       const analysisSegmentActive = hasSelectedAnalysisSegment && selectedAnalysisSegmentEdges.length > 0;
 
       networkLlaves.forEach((entry) => {
-        entry.lines.forEach((line, index) => {
-          if (line.coords && line.coords.length > 0) {
-            const fixedCoords = line.coords.map(c => fixCoord(c));
+        (Array.isArray(entry?.lines) ? entry.lines : []).forEach((line, index) => {
+          const fixedCoords = getDrawableLineCoordinates(line?.coords);
+          if (fixedCoords.length > 0) {
             const lineId = String(line.id ?? index);
             const entryCableGroups = entry.cableGroups || [];
             const cableGroup = entryCableGroups.find(group => group.lineIds?.map(String).includes(lineId));
@@ -390,8 +390,9 @@ const MapViewer = forwardRef(({
 
       if (analysisSegmentActive) {
         selectedAnalysisSegmentEdges.forEach((edge) => {
-          if (!Array.isArray(edge?.coords) || edge.coords.length !== 2) return;
-          L.polyline(edge.coords.map(coord => fixCoord(coord)), {
+          const edgeCoords = getDrawableLineCoordinates(edge?.coords);
+          if (!edgeCoords.length) return;
+          L.polyline(edgeCoords, {
             color: '#d81b60',
             weight: weight + 3,
             opacity: 1,
@@ -399,10 +400,11 @@ const MapViewer = forwardRef(({
           }).addTo(networkGroup);
         });
 
-        llaveData.lines.forEach((line, index) => {
+        (Array.isArray(llaveData?.lines) ? llaveData.lines : []).forEach((line, index) => {
           const lineId = String(line.id ?? index);
-          if (!selectedLineIds.includes(lineId) || !Array.isArray(line.coords)) return;
-          L.polyline(line.coords.map(coord => fixCoord(coord)), {
+          const lineCoords = getDrawableLineCoordinates(line?.coords);
+          if (!selectedLineIds.includes(lineId) || !lineCoords.length) return;
+          L.polyline(lineCoords, {
             color: '#ffca28',
             weight: weight + 5,
             opacity: 1,

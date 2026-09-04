@@ -11,13 +11,14 @@ import {
   getLineCalibreDisplay,
   hydrateLlave,
   normalizeCalibreLabel,
+  resolveFaultAnalyticalCoordinate,
   resolveLineCalibre,
   resolveLineUsage
 } from '../lib/circuitAnalysis.js';
 import { classifyExternalReference, safeExternalNavigationUrl } from '../lib/externalAssetSafety.js';
 import { buildAnalysisBranchFaultView, calculateBranchIndicators, calculateParetoPriority, describeParetoCandidates, resolveAnalysisBranch } from '../lib/branchIndicators.js';
 import { buildCircuitTopology, NODE_SNAP_TOLERANCE_METERS, TERMINAL_SPUR_MAX_METERS } from '../lib/circuitTopology.js';
-import { ANALYSIS_MAX_DEFLECTION_DEG, ANALYSIS_MIN_ANGLE_MARGIN_DEG, buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '../lib/analysisSegments.js';
+import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '../lib/analysisSegments.js';
 import { mapProjectForSupabase } from '../lib/projectImport.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
 import { assertProjectReadyForDownload, validateProject } from '../lib/projectValidation.js';
@@ -259,7 +260,12 @@ test('Cliente remains in the original network but is excluded before topology, c
   assert.deepEqual(result.topology, baseline.topology);
   assert.equal(result.lengthByCalibre.some(item => item.normalizedLabel === 'CLIENT CABLE'), false);
   assert.equal(assignment.lineId, 'network');
-  assert.ok(assignment.distanceMeters > 5 && assignment.distanceMeters < 6);
+  assert.ok(assignment.distanceMeters < 0.01);
+  assert.deepEqual(assignment.originalCoordinate, fault.coords);
+  assert.deepEqual(assignment.analyticalCoordinate, lines[1].coords[0]);
+  assert.equal(assignment.analyticallyRelocated, true);
+  assert.equal(assignment.analyticalCoordinateSource, 'CLIENT_SERVICE_ENDPOINT');
+  assert.equal(result.faultAssignment.analyticallyRelocated, 1);
   assert.equal(result.registeredStoredLengthMeters, 125);
   assert.equal(result.analyzableStoredLengthMeters, 120);
   assert.equal(result.excludedClientStoredLengthMeters, 5);
@@ -305,6 +311,8 @@ test('21949A usage regression leaves zero Cliente edges in the analytical graph'
   assert.equal(result.usageSummary.secondary.segmentCount, 2);
   assert.equal(result.topology.originalEdges.filter(edge => edge.usage === 'CLIENTE').length, 0);
   assert.equal(result.topology.originalEdges.filter(edge => edge.usage === 'SECUNDARIO').length, 2);
+  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, result.topology.branchCount);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.calibreCuts, 0);
 });
 
 test('usage and Cliente geometry survive canonical project round-trip unchanged', async () => {
@@ -322,7 +330,7 @@ test('usage and Cliente geometry survive canonical project round-trip unchanged'
   assert.equal(secondExport.llaves[0].lines_data[0].usage, 'Cliente');
   assert.equal(secondExport.llaves[0].lines_data[0].cableType, 'CNX 2x6');
   const mapSource = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
-  assert.match(mapSource, /entry\.lines\.forEach/);
+  assert.match(mapSource, /Array\.isArray\(entry\?\.lines\) \? entry\.lines : \[\]/);
   assert.doesNotMatch(mapSource, /filter\([^\n]*usage/);
 });
 
@@ -363,36 +371,94 @@ test('phase 2 evaluates every consecutive segment in a polyline', () => {
   assert.ok(Math.abs(nearest.nearestPoint[1] - 0.001) < 1e-12);
 });
 
-test('phase 2 reports missing coordinates and all confidence levels', () => {
+test('phase 2 enforces high/review distance bands and keeps farther faults unassigned', () => {
   const physicalSegments = [{
     segmentKey: 'physical-a',
     lineId: 'line-a',
     coords: [[0, 0], [0, 0.001]]
   }];
   const faults = [
-    { id: 1, coords: [0.000045, 0.0005] },
-    { id: 2, coords: [0.000135, 0.0005] },
-    { id: 3, coords: [0.0003, 0.0005] },
-    { id: 4, coords: null }
+    { id: 1, coords: [0.000027, 0.0005] },
+    { id: 2, coords: [0.000072, 0.0005] },
+    { id: 3, coords: [0.000099, 0.0005] },
+    { id: 4, coords: [0.009, 0.0005] },
+    { id: 5, coords: null }
   ];
 
   const result = assignFaultsToPhysicalSegments(faults, physicalSegments);
-  assert.equal(result.totalFaults, 4);
-  assert.equal(result.assigned, 3);
+  assert.equal(result.totalFaults, 5);
+  assert.equal(result.assigned, 2);
   assert.equal(result.missingCoordinates, 1);
   assert.equal(result.highConfidence, 1);
   assert.equal(result.reviewConfidence, 1);
-  assert.equal(result.lowConfidence, 1);
-  assert.deepEqual(result.assignments.map(item => item.confidence), ['high', 'review', 'low', undefined]);
-  assert.equal(result.assignments[2].segmentKey, 'physical-a');
-  assert.equal(result.assignments[3].unassigned_reason, 'missing_coordinates');
+  assert.equal(result.lowConfidence, 0);
+  assert.equal(result.tooFarFromNetwork, 2);
+  assert.deepEqual(result.assignments.map(item => item.confidence), ['high', 'review', undefined, undefined, undefined]);
+  assert.equal(result.assignments[2].unassigned_reason, 'TOO_FAR_FROM_NETWORK');
+  assert.equal(result.assignments[2].segmentKey, undefined);
+  assert.equal(result.assignments[2].nearestSegmentKey, 'physical-a');
+  assert.ok(result.assignments[2].distanceMeters > 10);
+  assert.ok(result.assignments[3].distanceMeters > 900);
+  assert.equal(result.assignments[4].unassigned_reason, 'missing_coordinates');
+
+  const analyzed = analyzeCircuit([{ id: 'network', coords: physicalSegments[0].coords, length: 111 }], [faults[2]]);
+  assert.equal(analyzed.branchIndicators.faultsAssignedToBranches, 0);
+  assert.equal(analyzed.analysisSegmentIndicators.faultsAssignedToAnalysisSegments, 0);
+  assert.equal(analyzed.branchIndicators.priorityCandidates.length, 0);
 });
 
-test('phase 2 confidence boundaries are inclusive at 10 and 25 meters', () => {
-  assert.equal(classifyFaultAssignmentConfidence(10), 'high');
-  assert.equal(classifyFaultAssignmentConfidence(10.000001), 'review');
-  assert.equal(classifyFaultAssignmentConfidence(25), 'review');
-  assert.equal(classifyFaultAssignmentConfidence(25.000001), 'low');
+test('phase 2 confidence boundaries are inclusive at 5 and 10 meters', () => {
+  assert.equal(classifyFaultAssignmentConfidence(5), 'high');
+  assert.equal(classifyFaultAssignmentConfidence(5.000001), 'review');
+  assert.equal(classifyFaultAssignmentConfidence(10), 'review');
+  assert.equal(classifyFaultAssignmentConfidence(10.000001), null);
+});
+
+test('Cliente endpoint relocation preserves the original coordinate and never assigns the Cliente segment', () => {
+  const meter = 1 / 111195.08;
+  const network = { segmentKey: 'network', lineId: 'network', usage: 'SERVICIO PARTICULAR', coords: [[0, 0], [0, 30 * meter]] };
+  const client = { segmentKey: 'client', lineId: 'client', usage: 'CLIENTE', analysisExclusionReason: 'CLIENT_SERVICE', coords: [[0, 0], [-8 * meter, 0]] };
+  const fault = { id: 'supply-fault', coords: [-8 * meter, 0.5 * meter] };
+  const result = assignFaultsToPhysicalSegments([fault], [network], { clientSegments: [client] });
+  const assignment = result.assignments[0];
+
+  assert.deepEqual(assignment.originalCoordinate, fault.coords);
+  assert.deepEqual(assignment.analyticalCoordinate, [0, 0]);
+  assert.equal(assignment.analyticallyRelocated, true);
+  assert.equal(assignment.segmentKey, 'network');
+  assert.notEqual(assignment.segmentKey, 'client');
+  assert.ok(assignment.distanceMeters < 0.01);
+});
+
+test('multiple Cliente endpoints with different analytical targets remain unassigned as ambiguous', () => {
+  const meter = 1 / 111195.08;
+  const point = [0, 0];
+  const clients = [
+    { segmentKey: 'client-a', usage: 'CLIENTE', coords: [point, [0, 8 * meter]] },
+    { segmentKey: 'client-b', usage: 'CLIENTE', coords: [point, [8 * meter, 0]] }
+  ];
+  const resolution = resolveFaultAnalyticalCoordinate(point, clients);
+  const result = assignFaultsToPhysicalSegments([{ id: 'ambiguous', coords: point }], [
+    ...clients,
+    { segmentKey: 'network', coords: [[0, 8 * meter], [0, 30 * meter]] }
+  ]);
+
+  assert.equal(resolution.clientRelocationStatus, 'ambiguous');
+  assert.equal(resolution.clientTargetCount, 2);
+  assert.equal(result.assignments[0].unassigned_reason, 'AMBIGUOUS_CLIENT_CONNECTION');
+  assert.equal(result.assignments[0].segmentKey, undefined);
+  assert.equal(result.ambiguousClientConnections, 1);
+});
+
+test('normal faults and networks without usage retain their original analytical coordinate', () => {
+  const result = assignFaultsToPhysicalSegments([{ id: 'normal', latitud: 0, longitud: 0.00005 }], [{
+    segmentKey: 'legacy-network',
+    coords: [[0, 0], [0, 0.001]]
+  }]);
+  assert.deepEqual(result.assignments[0].originalCoordinate, [0, 0.00005]);
+  assert.deepEqual(result.assignments[0].analyticalCoordinate, [0, 0.00005]);
+  assert.equal(result.assignments[0].analyticallyRelocated, false);
+  assert.equal(result.assignments[0].confidence, 'high');
 });
 
 test('phase 2 classifies only exact projections on degree-three endpoints as junction faults', () => {
@@ -1012,7 +1078,7 @@ test('Pareto presentation keeps exact ties descriptive without choosing a winner
   assert.deepEqual(describeParetoCandidates([]), []);
 });
 
-test('analysis segments merge a unique straight continuation and preserve fault accounting', () => {
+test('analysis segments stop at a degree-three bifurcation and preserve fault accounting', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'west', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1027,23 +1093,24 @@ test('analysis segments merge a unique straight continuation and preserve fault 
   ];
   const result = analyzeCircuit(lines, faults);
   const indicators = result.analysisSegmentIndicators;
-  const merged = indicators.analysisSegments.find(segment => segment.branchIds.length === 2);
+  const westSegment = indicators.analysisSegments.find(segment => segment.edgeIds.some(edgeId => edgeId.includes('west')));
 
-  assert.equal(ANALYSIS_MAX_DEFLECTION_DEG, 10);
-  assert.equal(ANALYSIS_MIN_ANGLE_MARGIN_DEG, 10);
-  assert.equal(indicators.totalAnalysisSegments, 2);
-  assert.equal(merged.edgeIds.length, 2);
-  assert.equal(merged.faultCount, 2);
-  assert.equal(merged.confidence.high, 2);
+  assert.equal(result.topology.nodes.find(node => node.degree === 3)?.kind, 'bifurcation');
+  assert.equal(indicators.totalAnalysisSegments, 3);
+  assert.ok(indicators.analysisSegments.every(segment => segment.branchIds.length === 1));
+  assert.equal(indicators.analysisSegments.reduce((total, segment) => total + segment.faultCount, 0), 2);
   assert.equal(indicators.faultsAssignedToAnalysisSegments, 2);
   assert.equal(indicators.faultsOutsideAnalysisSegments, 2);
   assert.equal(indicators.faultsAssignedToAnalysisSegments + indicators.faultsOutsideAnalysisSegments, faults.length);
   assert.equal(new Set(indicators.analysisSegments.flatMap(segment => segment.edgeIds)).size, result.topology.edges.length);
+  assert.equal(indicators.diagnostics.acceptedContinuities.length, 0);
+  assert.equal(indicators.diagnostics.calibreCuts, 0);
+  assert.equal(indicators.priorityCandidates.length, 2);
   assert.deepEqual(analyzeCircuit(lines, faults).analysisSegmentIndicators, indicators);
 
-  const selected = resolveAnalysisSegment(indicators, merged.analysisSegmentId);
+  const selected = resolveAnalysisSegment(indicators, westSegment.analysisSegmentId);
   const filtered = buildAnalysisSegmentFaultView(faults, result.faultAssignment, selected, true);
-  assert.deepEqual(filtered.faults.map(fault => fault.id), ['west-fault', 'east-fault']);
+  assert.deepEqual(filtered.faults.map(fault => fault.id), ['west-fault']);
 });
 
 for (const deflectionDegrees of [0, 45, 90, 120]) {
@@ -1061,8 +1128,8 @@ for (const deflectionDegrees of [0, 45, 90, 120]) {
     assert.equal(result.topology.branchCount, 2);
     assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 1);
     assert.equal(accepted.length, 1);
-    assert.equal(accepted[0].continuityReason, 'geometry');
-    assert.ok(Math.abs(accepted[0].deflection - deflectionDegrees) < 0.01);
+    assert.equal(accepted[0].continuityReason, 'degree-2');
+    assert.equal(accepted[0].degree, 2);
   });
 }
 
@@ -1098,7 +1165,7 @@ test('analysis segments preserve a unique degree-two continuation with incomplet
   assert.ok(segment.unknownCalibreLengthMeters > 29.9);
 });
 
-test('analysis segments stop a unique degree-two continuation at a known calibre change', () => {
+test('analysis segments continue through a degree-two known calibre change and report mixed calibre', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'incoming', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1111,11 +1178,14 @@ test('analysis segments stop a unique degree-two continuation at a known calibre
   const result = analyzeCircuit(lines, [], { rootCoordinate: [0, 0] });
 
   assert.equal(result.topology.branchCount, 2);
-  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 2);
-  assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 0);
+  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 1);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 1);
+  assert.equal(result.analysisSegmentIndicators.analysisSegments[0].calibreStatus, 'mixed');
+  assert.equal(result.analysisSegmentIndicators.analysisSegments[0].calibreLabel, 'Mixto');
+  assert.deepEqual(result.analysisSegmentIndicators.analysisSegments[0].calibres.map(item => item.label), ['N2XY 3X70', 'NYY 3X16']);
 });
 
-test('analysis segments retain a known calibre boundary on an otherwise straight continuation', () => {
+test('analysis segments stop at a bifurcation while retaining calibre as information', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'west', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1130,6 +1200,7 @@ test('analysis segments retain a known calibre boundary on an otherwise straight
   const result = analyzeCircuit(lines, []);
 
   assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 3);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.calibreCuts, 0);
   assert.deepEqual(new Set(result.analysisSegmentIndicators.analysisSegments.map(segment => segment.calibreLabel)),
     new Set(['NYY 3X10', 'NYY 3X16', 'NYY 3X25']));
 });
@@ -1170,7 +1241,30 @@ test('analysis segments can restore a deterministic chain of intra-node connecto
   assert.deepEqual(segment.gaps, []);
 });
 
-test('analysis segments do not cross an equal-angle parallel ambiguity', () => {
+test('00338S regression keeps Cliente and intra-node geometry from creating cuts and ignores calibre changes at degree two', () => {
+  const meter = 1 / 111195.08;
+  const lines = [
+    { id: 'left', usage: 'Servicio Particular', cableType: 'N2XY 3x70', coords: [[0, -30 * meter], [0, 0]], length: 30 },
+    { id: 'intra', usage: 'Servicio Particular', cableType: 'N2XY 3x70', coords: [[0, 0], [0, meter]], length: 1 },
+    { id: 'right', usage: 'Servicio Particular', cableType: 'NYY 3x16', coords: [[0, meter], [0, 31 * meter]], length: 30 },
+    { id: 'client', usage: 'Cliente', cableType: 'CNX 2x6', coords: [[0, 0], [5 * meter, 0]], length: 5 }
+  ];
+  const first = analyzeCircuit(lines, [], { rootCoordinate: [0, 0] });
+  const second = analyzeCircuit(lines, [], { rootCoordinate: [0, 0] });
+  const [segment] = first.analysisSegmentIndicators.analysisSegments;
+
+  assert.equal(first.analysisExcludedClientSegments, 1);
+  assert.equal(first.topology.intraNodeEdgeCount, 1);
+  assert.equal(first.topology.nodes.find(node => node.nodeId === first.topology.rootNodeId)?.degree, 2);
+  assert.equal(first.analysisSegmentIndicators.totalAnalysisSegments, 1);
+  assert.equal(segment.calibreStatus, 'mixed');
+  assert.equal(segment.calibreLabel, 'Mixto');
+  assert.ok(segment.lengthMeters > 60 && segment.lengthMeters < 62);
+  assert.equal(first.analysisSegmentIndicators.diagnostics.calibreCuts, 0);
+  assert.deepEqual(second.analysisSegmentIndicators, first.analysisSegmentIndicators);
+});
+
+test('analysis segments stop at a bifurcation even when continuations are angularly identical', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'west', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1182,10 +1276,10 @@ test('analysis segments do not cross an equal-angle parallel ambiguity', () => {
   assert.equal(result.topology.branchCount, 3);
   assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 3);
   assert.ok(result.analysisSegmentIndicators.diagnostics.continuity.some(item =>
-    item.status === 'stopped' && item.angleMargin === 0));
+    item.status === 'stopped' && item.reason === 'bifurcation' && item.degree === 3));
 });
 
-test('analysis segments use a unique matching calibre to resolve an angular tie', () => {
+test('analysis segments never use matching calibre to cross a bifurcation', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'incoming', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1197,15 +1291,13 @@ test('analysis segments use a unique matching calibre to resolve an angular tie'
     ] } }
   ];
   const result = analyzeCircuit(lines, []);
-  const merged = result.analysisSegmentIndicators.analysisSegments.find(segment =>
-    segment.edgeIds.some(edgeId => edgeId.includes('incoming')));
-
-  assert.equal(merged.branchIds.length, 2);
-  assert.ok(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.some(item =>
-    item.continuityReason === 'calibre'));
+  assert.equal(result.topology.bifurcationCount, 1);
+  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 3);
+  assert.ok(result.analysisSegmentIndicators.analysisSegments.every(segment => segment.branchIds.length === 1));
+  assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 0);
 });
 
-test('analysis segments allow an unambiguous same-calibre sharp turn without changing the angular limit', () => {
+test('analysis segments never use same calibre or a sharp turn to cross a bifurcation', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'incoming', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1217,11 +1309,8 @@ test('analysis segments allow an unambiguous same-calibre sharp turn without cha
     ] } }
   ];
   const result = analyzeCircuit(lines, []);
-  const accepted = result.analysisSegmentIndicators.diagnostics.acceptedContinuities;
-
-  assert.equal(ANALYSIS_MAX_DEFLECTION_DEG, 10);
-  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 2);
-  assert.ok(accepted.some(item => item.continuityReason === 'calibre' && item.deflection > 80));
+  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 3);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 0);
 });
 
 test('analysis segments do not use calibre when two adjacent alternatives share it', () => {
@@ -1256,7 +1345,7 @@ test('analysis segments keep a boundary when a plausible alternative has unknown
   assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 0);
 });
 
-test('analysis segments ignore an angularly implausible unknown alternative for calibre continuity', () => {
+test('analysis segments do not use angular plausibility or calibre at degree four', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'incoming', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1270,8 +1359,9 @@ test('analysis segments ignore an angularly implausible unknown alternative for 
   ];
   const result = analyzeCircuit(lines, []);
 
-  assert.ok(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.some(item =>
-    item.continuityReason === 'calibre' && item.deflection > ANALYSIS_MAX_DEFLECTION_DEG));
+  assert.equal(result.topology.nodes.find(node => node.degree === 4)?.kind, 'bifurcation');
+  assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 4);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.acceptedContinuities.length, 0);
 });
 
 test('analysis segments do not use calibre continuity from an unknown incoming branch', () => {
@@ -1291,7 +1381,7 @@ test('analysis segments do not use calibre continuity from an unknown incoming b
     item.continuityReason === 'calibre'));
 });
 
-test('analysis segments preserve a boundary between different known calibres', () => {
+test('analysis segments remain separated by bifurcation, not by different calibres', () => {
   const meter = 1 / 111195.08;
   const lines = [
     { id: 'left', coords: [[0, -30 * meter], [0, 0]], length: 30 },
@@ -1306,6 +1396,7 @@ test('analysis segments preserve a boundary between different known calibres', (
   const result = analyzeCircuit(lines, []);
 
   assert.equal(result.analysisSegmentIndicators.totalAnalysisSegments, 3);
+  assert.equal(result.analysisSegmentIndicators.diagnostics.calibreCuts, 0);
 });
 
 test('analysis segments keep unknown connector length separate from known calibre', () => {
@@ -1378,7 +1469,7 @@ test('structured calibre propagates deterministically through physical segment, 
   assert.equal(westEdge.calibreLabel, 'NYY 3X10');
   assert.equal(westBranch.calibreLabel, 'NYY 3X10');
   assert.equal(westAnalysisSegment.calibreLabel, 'NYY 3X10');
-  assert.equal(first.analysisSegmentIndicators.totalAnalysisSegments, 2);
+  assert.equal(first.analysisSegmentIndicators.totalAnalysisSegments, 3);
   assert.deepEqual(second, first);
 });
 
