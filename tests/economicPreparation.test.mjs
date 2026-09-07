@@ -303,16 +303,55 @@ test('future economic input is pure, traceable and performs no SED compensation 
   assert.equal(Object.hasOwn(input, 'npv'), false);
 });
 
-test('future economic input keeps SED compensation as context only and preserves missing calls', () => {
+test('future economic input derives the default SED compensation per fault and preserves missing calls', () => {
   const input = buildEconomicAnalysisInput({
     sedId: '00338S', circuitId: 'A',
     analysisUnit: { analysisSegmentId: 'auto', faultIndexes: [0], lengthMeters: 5 },
     selectedPeriodKeys: ['2026-08'],
     faults: [{ id: 'f', periodKey: '2026-08', call_count: null }],
-    sedMetricReconciliation: { compensation: { dataAvailable: true, totalKnown: 50 } }
+    sedMetricReconciliation: {
+      faultCountByPeriod: [{ periodKey: '2026-08', count: 2 }],
+      compensation: {
+        dataAvailable: true,
+        dataComplete: true,
+        totalKnown: 50,
+        byPeriod: [{ periodKey: '2026-08', value: 50, available: true }],
+        periodsMissing: []
+      }
+    }
   });
-  assert.equal(input.compensation.scope, 'sed_context_only');
+  assert.equal(input.compensation.scope, 'sed');
+  assert.equal(input.compensation.automatic.compensationPerFault, 25);
+  assert.equal(input.compensation.automatic.faultsCompatible, 2);
   assert.equal(input.compensation.circuit.totalKnown, null);
   assert.equal(input.compensation.allocatedToAnalysisUnit, false);
   assert.deepEqual(input.calls, { totalKnown: 0, recordsWithData: 0, recordsWithoutData: 1 });
+});
+
+test('default SED compensation divides only by faults from periods with compensation data', () => {
+  const input = buildEconomicAnalysisInput({
+    sedId: '00338S', circuitId: 'A',
+    analysisUnit: { analysisSegmentId: 'auto', faultIndexes: [] },
+    selectedPeriodKeys: ['2026-07', '2026-08'],
+    faults: [],
+    sedMetricReconciliation: {
+      faultCountByPeriod: [
+        { periodKey: '2026-07', count: 2 },
+        { periodKey: '2026-08', count: 5 }
+      ],
+      compensation: {
+        dataAvailable: true,
+        dataComplete: false,
+        totalKnown: 100,
+        byPeriod: [
+          { periodKey: '2026-07', value: 100, available: true },
+          { periodKey: '2026-08', value: null, available: false }
+        ],
+        periodsMissing: ['2026-08']
+      }
+    }
+  });
+  assert.equal(input.compensation.automatic.compensationPerFault, 50);
+  assert.equal(input.compensation.automatic.faultsCompatible, 2);
+  assert.equal(input.compensation.automatic.coverageStatus, 'partial');
 });

@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback, useTransition } from 'react';
 import dynamic from 'next/dynamic';
-import { usePathname, useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import Sidebar from '@/components/Sidebar';
 import FaultForm from '@/components/FaultForm';
@@ -26,7 +25,7 @@ import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging
 import { deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, resolveActivePeriodSelection, summarizePeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
 import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFaultCause, readCallCountFromRow } from '@/lib/monthlyFaultImport';
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
-import { buildSedPath, buildSedUrl, normalizeSedIdParam, resolveSedDeepLink } from '@/lib/sedLinks';
+import { buildSedPath, buildSedUrl, normalizeSedIdParam, replaceBrowserPath, resolveSedDeepLink } from '@/lib/sedLinks';
 import { normalizeSedId } from '@/lib/sedUtils';
 import { buildManualEdgeCatalog, resolveManualGroupEdgeRefs } from '@/lib/manualAnalysisUnits';
 import { buildEconomicAnalysisInput } from '@/lib/economicAnalysisInput';
@@ -109,8 +108,6 @@ async function downloadProjectFile(project) {
 }
 
 export default function Page({ requestedSedId = '', isSedRoute = false }) {
-  const router = useRouter();
-  const pathname = usePathname();
   const normalizedRequestedSedId = normalizeSedIdParam(requestedSedId);
   // Estado de Datos
   const [localDatabase, setLocalDatabase] = useState({});
@@ -159,6 +156,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [isAnalyzingCircuit, setIsAnalyzingCircuit] = useState(false);
   const [isNavigationPending, startNavigationTransition] = useTransition();
   const periodLoadRequestRef = useRef(0);
+  const initializationStartedRef = useRef(false);
   const copyFeedbackTimeoutRef = useRef(null);
   const selectedPeriodKeysRef = useRef([]);
   const hasManualPeriodSelectionRef = useRef(false);
@@ -208,6 +206,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   }, [isConflictModalOpen, setMajorOverlayOpen]);
 
   useEffect(() => {
+    if (initializationStartedRef.current) return;
+    initializationStartedRef.current = true;
     initializeData();
   }, []);
 
@@ -290,18 +290,21 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
 
     if (!isSupabaseConfigured || !supabase) return;
     try {
-      const { data: sedsData, error: sedsError } = await supabase.from('seds').select('*').range(0, 99999);
-      const { data: llavesData } = await supabase.from('llaves').select('*').range(0, 99999);
-      const periodsResult = await supabase.from('fault_periods').select('period_key, label, start_date, end_date, row_count, created_at').order('period_key', { ascending: false });
-      const projectsResult = periodsResult.error
-        ? { data: null, error: periodsResult.error }
-        : await supabase.from('geopluz_work_projects').select('id, owner_id, name, description, sed_ids, period_keys, created_at, updated_at').order('updated_at', { ascending: false });
-      const compensationResult = periodsResult.error
-        ? { data: null, error: periodsResult.error }
-        : await supabase.from('sed_monthly_metrics').select('sed_id, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false });
-      const circuitCompensationResult = periodsResult.error
-        ? { data: null, error: periodsResult.error }
-        : await supabase.from('circuit_monthly_metrics').select('sed_id, llave_code, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false });
+      const [
+        { data: sedsData, error: sedsError },
+        { data: llavesData },
+        periodsResult,
+        projectsResult,
+        compensationResult,
+        circuitCompensationResult
+      ] = await Promise.all([
+        supabase.from('seds').select('*').range(0, 99999),
+        supabase.from('llaves').select('*').range(0, 99999),
+        supabase.from('fault_periods').select('period_key, label, start_date, end_date, row_count, created_at').order('period_key', { ascending: false }),
+        supabase.from('geopluz_work_projects').select('id, owner_id, name, description, sed_ids, period_keys, created_at, updated_at').order('updated_at', { ascending: false }),
+        supabase.from('sed_monthly_metrics').select('sed_id, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false }),
+        supabase.from('circuit_monthly_metrics').select('sed_id, llave_code, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false })
+      ]);
       
       if (!sedsError && sedsData) {
         const db = {};
@@ -391,7 +394,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     });
     setMainDataLoaded(false);
     setDeepLinkNotice('');
-    if (window.location.pathname.startsWith('/sed/')) router.replace('/', { scroll: false });
+    if (window.location.pathname.startsWith('/sed/')) replaceBrowserPath('/');
     const localPeriodCounts = summarizePeriods(model.numberedPointsList);
     const localPeriods = [...localPeriodCounts.entries()].map(([periodKey, rowCount]) => ({ periodKey, label: formatPeriodLabel(periodKey), rowCount, local: true }));
     setFaultPeriods(localPeriods);
@@ -715,8 +718,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   useEffect(() => {
     if (!deepLinkResolved || !mainDataLoaded || !isSupabaseSource) return;
     const nextPath = currentSedId ? buildSedPath(currentSedId) : '/';
-    if (pathname !== nextPath) router.replace(nextPath, { scroll: false });
-  }, [currentSedId, deepLinkResolved, isSupabaseSource, mainDataLoaded, pathname, router]);
+    replaceBrowserPath(nextPath);
+  }, [currentSedId, deepLinkResolved, isSupabaseSource, mainDataLoaded]);
 
   async function handleCopySedLink() {
     if (!currentSedId || typeof window === 'undefined') return;

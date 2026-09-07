@@ -33,7 +33,7 @@ function formatPercent(value) {
 }
 
 export default function EconomicAnalysisPanel({ input, canSave = false, storedSimulations = [], onSaveSnapshot }) {
-  const automaticCompensation = input?.compensation?.circuit?.compensationPerFault;
+  const automaticCompensation = input?.compensation?.automatic?.compensationPerFault ?? input?.compensation?.circuit?.compensationPerFault;
   const [aerialCost, setAerialCost] = useState(COSTO_AEREO_DEFAULT ?? '');
   const [undergroundCost, setUndergroundCost] = useState(COSTO_SUBTERRANEO_DEFAULT ?? '');
   const [unclassifiedCost, setUnclassifiedCost] = useState('');
@@ -112,7 +112,8 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
             <input className="input-control" type="number" min="0" value={compensationDisplay} onChange={event => { setCompensationMode('manual'); setManualCompensation(event.target.value); }} placeholder="Ingresar supuesto manual" />
           </label>
           <div style={{ color: 'var(--text-muted)' }}>
-            {simulation.compensationPerFault.source === 'automatic' && `Calculada automáticamente con ${simulation.compensationPerFault.circuitFaultsCompatible} fallas del circuito.`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'circuit' && `Calculada automáticamente con ${simulation.compensationPerFault.faultsCompatible} fallas del circuito.`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'sed' && `Calculada automáticamente: compensación total de la SED dividida entre ${simulation.compensationPerFault.faultsCompatible} fallas de los mismos periodos.`}
             {simulation.compensationPerFault.source === 'manual' && 'Valor ingresado manualmente para esta simulación.'}
             {simulation.compensationPerFault.source === 'manual_override' && 'Override manual del valor calculado.'}
             {simulation.compensationPerFault.source === 'unavailable' && 'Sin dato automático compatible; puede ingresar un supuesto manual.'}

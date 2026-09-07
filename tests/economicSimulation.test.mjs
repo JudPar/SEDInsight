@@ -125,13 +125,18 @@ test('missing compensation leaves dependent results unavailable', () => {
   assert.equal(result.financial.available, false);
 });
 
-test('SED compensation context is never used as an automatic circuit fallback', () => {
+test('SED compensation average is used automatically when circuit compensation is unavailable', () => {
   const input = technicalInput({
-    compensation: { circuit: { compensationPerFault: null, coverageStatus: 'unavailable', compatiblePeriodKeys: [] }, sedContext: { dataAvailable: true, totalKnown: 999999 } }
+    compensation: {
+      automatic: { compensationPerFault: 250, totalKnown: 1000, faultsCompatible: 4, compatiblePeriodKeys: ['2026-01'], coverageStatus: 'complete', sourceScope: 'sed' },
+      circuit: { compensationPerFault: null, coverageStatus: 'unavailable', compatiblePeriodKeys: [] },
+      sedContext: { dataAvailable: true, totalKnown: 1000 }
+    }
   });
   const result = simulateEconomicAnalysis(input, { aerialCostPerKm: 1, undergroundCostPerKm: 1 });
-  assert.equal(result.compensationPerFault.source, 'unavailable');
-  assert.equal(result.compensationPerFault.value, null);
+  assert.equal(result.compensationPerFault.source, 'automatic');
+  assert.equal(result.compensationPerFault.sourceScope, 'sed');
+  assert.equal(result.compensationPerFault.value, 250);
 });
 
 test('compatible circuit compensation uses circuit faults from matching months, never selected-unit faults', () => {

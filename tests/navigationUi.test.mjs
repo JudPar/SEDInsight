@@ -94,6 +94,12 @@ test('SED and llave changes preserve the current edit or presentation mode', () 
   assert.match(llaveSelection, /runNavigationTransition\('Cargando circuito\.\.\.'/);
 });
 
+test('dynamic SED URL synchronization does not navigate away from the mounted GEOPLUZ view', () => {
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.match(page, /replaceBrowserPath\(nextPath\)/);
+  assert.doesNotMatch(page, /useRouter|usePathname|router\.replace\(nextPath/);
+});
+
 test('mode toggles repeatedly change only the explicit presentation flag', () => {
   const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
   const enterEdit = sourceSection(page, 'async function handleEnterEditMode', 'function handleEnterPresentationMode');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildSedPath, buildSedUrl, resolveSedDeepLink } from '../lib/sedLinks.js';
+import { buildSedPath, buildSedUrl, replaceBrowserPath, resolveSedDeepLink } from '../lib/sedLinks.js';
 
 const seds = { '03483A': { llaves: { A: {} } }, '00338S': { llaves: {} } };
 
@@ -21,6 +21,21 @@ test('SED paths and copied links use safe deterministic URL encoding', () => {
   assert.equal(buildSedUrl('https://geopluz.example/', 'SED 01/BT'), 'https://geopluz.example/sed/SED%2001%2FBT');
 });
 
+test('selection replaces the visible SED path without starting a Next route navigation', () => {
+  const calls = [];
+  const browserWindow = {
+    location: { pathname: '/' },
+    history: {
+      state: { preserved: true },
+      replaceState: (state, title, path) => calls.push({ state, title, path })
+    }
+  };
+  assert.equal(replaceBrowserPath('/sed/00338S', browserWindow), true);
+  assert.deepEqual(calls, [{ state: { preserved: true }, title: '', path: '/sed/00338S' }]);
+  browserWindow.location.pathname = '/sed/00338S';
+  assert.equal(replaceBrowserPath('/sed/00338S', browserWindow), false);
+});
+
 test('new SED values require no new route or hardcoded registry', () => {
   const nextSeds = { ...seds, '05001S': { llaves: {} } };
   assert.equal(resolveSedDeepLink(nextSeds, '05001S').found, true);
@@ -38,9 +53,10 @@ test('AuthGate preserves the requested pathname through login', () => {
 test('main selection updates the route, clearing selection returns home and local projects cannot consume deep links', () => {
   const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
   assert.match(page, /currentSedId \? buildSedPath\(currentSedId\) : '\/'/);
-  assert.match(page, /router\.replace\(nextPath, \{ scroll: false \}\)/);
+  assert.match(page, /replaceBrowserPath\(nextPath\)/);
+  assert.doesNotMatch(page, /router\.replace\(nextPath/);
   assert.match(page, /if \(isSedRoute\) \{[\s\S]*?await loadSupabaseData\(\)/);
-  assert.match(page, /window\.location\.pathname\.startsWith\('\/sed\/'\)[\s\S]*?router\.replace\('\/'/);
+  assert.match(page, /window\.location\.pathname\.startsWith\('\/sed\/'\)[\s\S]*?replaceBrowserPath\('\/'\)/);
 });
 
 test('copy action derives the URL from window origin and selected sedId', () => {
