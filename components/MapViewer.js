@@ -757,7 +757,7 @@ const MapViewer = forwardRef(({
           <div>{selectedPeriodLabel}</div>
           <div>Fallas: <strong>{sedPeriodSummary.faultCount}</strong></div>
           <div>Llamadas: <strong>{sedPeriodSummary.callDataAvailable ? sedPeriodSummary.callCount : 'Sin dato'}</strong>{sedPeriodSummary.callDataAvailable && !sedPeriodSummary.callDataComplete ? ' · parcial' : ''}</div>
-          <div>Compensación: <strong>{sedPeriodSummary.compensationDataAvailable ? `S/ ${sedPeriodSummary.compensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}` : 'Sin dato'}</strong>{sedPeriodSummary.compensationDataAvailable && !sedPeriodSummary.compensationDataComplete ? ' · parcial' : ''}</div>
+          <div>Compensación SED (referencia): <strong>{sedPeriodSummary.compensationDataAvailable ? `S/ ${sedPeriodSummary.compensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}` : 'Sin dato'}</strong>{sedPeriodSummary.compensationDataAvailable && !sedPeriodSummary.compensationDataComplete ? ' · parcial' : ''}</div>
         </div>
       )}
 

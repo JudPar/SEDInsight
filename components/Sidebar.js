@@ -108,6 +108,10 @@ export default function Sidebar({
   compensationRows,
   onImportCompensation,
   onDeleteCompensationPeriod,
+  circuitCompensationRows,
+  circuitCompensationSupport,
+  onImportCircuitCompensation,
+  onDeleteCircuitCompensationPeriod,
   workProjects,
   onSaveWorkProject,
   onOpenWorkProject,
@@ -326,6 +330,10 @@ export default function Sidebar({
           compensationRows={compensationRows}
           onImportCompensation={onImportCompensation}
           onDeleteCompensationPeriod={onDeleteCompensationPeriod}
+          circuitCompensationRows={circuitCompensationRows}
+          circuitCompensationSupport={circuitCompensationSupport}
+          onImportCircuitCompensation={onImportCircuitCompensation}
+          onDeleteCircuitCompensationPeriod={onDeleteCircuitCompensationPeriod}
           workProjects={workProjects}
           onSaveWorkProject={onSaveWorkProject}
           onOpenWorkProject={onOpenWorkProject}

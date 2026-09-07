@@ -118,6 +118,7 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
           <div style={{ color: 'var(--text-muted)' }}>
             {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'circuit' && `Calculada automáticamente con ${simulation.compensationPerFault.faultsCompatible} fallas del circuito.`}
             {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'sed' && `Calculada automáticamente: compensación total de la SED dividida entre ${simulation.compensationPerFault.faultsCompatible} fallas de los mismos periodos.`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'mixed' && `Calculada por periodo: compensación de llave cuando existe y compensación SED como referencia únicamente en los meses faltantes (${simulation.compensationPerFault.faultsCompatible} fallas compatibles).`}
             {simulation.compensationPerFault.source === 'manual' && 'Valor ingresado manualmente para esta simulación.'}
             {simulation.compensationPerFault.source === 'manual_override' && 'Override manual del valor calculado.'}
             {simulation.compensationPerFault.source === 'unavailable' && 'Sin dato automático compatible; puede ingresar un supuesto manual.'}

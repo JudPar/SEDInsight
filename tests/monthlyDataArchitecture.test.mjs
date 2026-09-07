@@ -206,6 +206,17 @@ test('compensation preview supports multiple months, zero and explicit conflicts
   assert.equal(preview.existingConflicts, 1);
 });
 
+test('UI exposes separate SED reference and SED-key compensation imports wired to period-scoped RPCs', () => {
+  const panel = readFileSync(new URL('../components/DataManagementPanel.js', import.meta.url), 'utf8');
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.match(panel, /Compensación mensual por SED \(referencia\)/);
+  assert.match(panel, /Compensación mensual por SED–llave/);
+  assert.match(panel, /prepareMonthlyCircuitCompensationImport/);
+  assert.match(page, /geopluz_import_circuit_compensation_period/);
+  assert.match(page, /geopluz_delete_circuit_compensation_period/);
+  assert.match(page, /circuitCompensationRows: circuitMonthlyMetrics/);
+});
+
 test('SED metrics aggregate selected periods and expose missing coverage without inventing values', () => {
   const metrics = buildSedPeriodMetrics(seds, [
     { sed: '00338S', periodKey: '2026-08', callCount: 0 },

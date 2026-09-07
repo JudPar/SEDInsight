@@ -152,6 +152,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [periodSupport, setPeriodSupport] = useState(false);
   const [sedMonthlyMetrics, setSedMonthlyMetrics] = useState([]);
   const [circuitMonthlyMetrics, setCircuitMonthlyMetrics] = useState([]);
+  const [circuitCompensationSupport, setCircuitCompensationSupport] = useState(false);
   const [workProjects, setWorkProjects] = useState([]);
   const [activeWorkSedIds, setActiveWorkSedIds] = useState([]);
   const [mainDataLoaded, setMainDataLoaded] = useState(false);
@@ -381,6 +382,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             createdAt: row.created_at,
             updatedAt: row.updated_at
           })) : []);
+          setCircuitCompensationSupport(!circuitCompensationResult.error);
           if (!projectsResult.error) setWorkProjects((projectsResult.data || []).map(project => ({ ...project, format: GEOPLUZ_PROJECT_CONFIG_FORMAT, version: GEOPLUZ_PROJECT_CONFIG_VERSION })));
         }
         setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
@@ -2109,6 +2111,31 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     return data;
   }
 
+  async function handleImportCircuitCompensation(preview, { replace = false } = {}) {
+    if (!isSupabaseSource || !periodSupport || !circuitCompensationSupport || !supabase) throw new Error('La compensación por llave requiere Base Principal y la migración aplicada.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_import_circuit_compensation_period', {
+      p_period_key: preview.periodKey,
+      p_rows: preview.rows,
+      p_replace: Boolean(replace)
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
+  async function handleDeleteCircuitCompensationPeriod(period) {
+    if (!isSupabaseSource || !circuitCompensationSupport || !supabase) throw new Error('La compensación por llave no puede eliminarse desde el modo actual.');
+    await requireLifecycleSession();
+    const { data, error } = await supabase.rpc('geopluz_delete_circuit_compensation_period', {
+      p_period_key: period.periodKey,
+      p_expected_rows: period.circuitCount
+    });
+    if (error) throw error;
+    await loadSupabaseData({ skipCache: true, preservePeriodSelection: true });
+    return data;
+  }
+
   async function handleDeleteFaultPeriod(period) {
     if (!isSupabaseSource || !periodSupport || !supabase || period?.periodKey === UNASSIGNED_PERIOD_KEY) throw new Error('Este periodo no puede eliminarse desde el modo actual.');
     await requireLifecycleSession();
@@ -2264,6 +2291,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           compensationRows={sedMonthlyMetrics}
           onImportCompensation={handleImportCompensation}
           onDeleteCompensationPeriod={handleDeleteCompensationPeriod}
+          circuitCompensationRows={circuitMonthlyMetrics}
+          circuitCompensationSupport={circuitCompensationSupport && isSupabaseSource}
+          onImportCircuitCompensation={handleImportCircuitCompensation}
+          onDeleteCircuitCompensationPeriod={handleDeleteCircuitCompensationPeriod}
           workProjects={workProjects}
           onSaveWorkProject={handleSaveWorkProject}
           onOpenWorkProject={handleOpenWorkProject}
