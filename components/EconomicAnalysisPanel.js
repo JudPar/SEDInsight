@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   COSTO_AEREO_DEFAULT,
   COSTO_SUBTERRANEO_DEFAULT,
@@ -32,7 +32,7 @@ function formatPercent(value) {
   return Number.isFinite(value) ? `${(value * 100).toLocaleString('es-PE', { maximumFractionDigits: 2 })}%` : 'No disponible';
 }
 
-export default function EconomicAnalysisPanel({ input, canSave = false, storedSimulations = [], onSaveSnapshot }) {
+export default function EconomicAnalysisPanel({ input, canSave = false, storedSimulations = [], onSaveSnapshot, onReportEconomicChange }) {
   const automaticCompensation = input?.compensation?.automatic?.compensationPerFault ?? input?.compensation?.circuit?.compensationPerFault;
   const [aerialCost, setAerialCost] = useState(COSTO_AEREO_DEFAULT ?? '');
   const [undergroundCost, setUndergroundCost] = useState(COSTO_SUBTERRANEO_DEFAULT ?? '');
@@ -59,6 +59,9 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
     escalationRate: numericInput(escalationPercent) === null ? null : numericInput(escalationPercent) / 100
   }), [aerialCost, undergroundCost, unclassifiedCost, compensationMode, manualCompensation, avoidablePercent, discountPercent, horizonYears, escalationPercent]);
   const simulation = useMemo(() => simulateEconomicAnalysis(input, assumptions), [input, assumptions]);
+  useEffect(() => {
+    onReportEconomicChange?.(input ? { input, simulation, note } : null);
+  }, [input, simulation, note, onReportEconomicChange]);
   const selectedPoisson = simulation.poisson?.[poissonMonths];
   const financial = simulation.financial;
   const automaticAvailable = Number.isFinite(automaticCompensation);
@@ -85,6 +88,7 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
   return (
     <div className="economic-analysis-panel" style={{ marginTop: '7px', padding: '7px', border: '1px solid var(--border-color)', borderRadius: '6px', background: 'var(--card-bg)' }}>
       <div style={{ fontWeight: 800, marginBottom: '5px' }}>Análisis económico preliminar · screening</div>
+      <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '6px' }}>Los reportes PDF y Excel incluyen esta simulación y sus supuestos actuales. Excel permite recalcularlos.</div>
 
       <details open>
         <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Datos observados</summary>

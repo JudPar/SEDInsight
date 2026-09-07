@@ -63,6 +63,7 @@ export default function Sidebar({
   onFilterSelectedAnalysisSegment,
   onShowAllAnalysisFaults,
   onSaveEconomicSimulation,
+  onReportEconomicChange,
   onToggleSegmentSelection,
   onStartEditCableGroup,
   onCancelEditCableGroup,
@@ -738,6 +739,7 @@ export default function Sidebar({
                             canSave={isEditable}
                             storedSimulations={economicSimulations || []}
                             onSaveSnapshot={onSaveEconomicSimulation}
+                            onReportEconomicChange={onReportEconomicChange}
                           />
                         )}
                         <div style={{ marginTop: '3px', color: 'var(--text-muted)' }}>

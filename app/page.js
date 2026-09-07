@@ -13,6 +13,7 @@ import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sor
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
+import { buildReportModel } from '@/lib/reportModel';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, listLocalWorkProjectConfigs, markLocalProjectExpected, removeLocalProject, removeLocalWorkProjectConfig, saveLocalWorkProjectConfig, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { analyzeCircuit, analyzeCircuitPhase1, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
@@ -159,6 +160,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [sedLinkFeedback, setSedLinkFeedback] = useState('');
   const [navigationLabel, setNavigationLabel] = useState('');
   const [isAnalyzingCircuit, setIsAnalyzingCircuit] = useState(false);
+  const [reportExportStatus, setReportExportStatus] = useState('');
+  const reportExportBusyRef = useRef(false);
+  const reportEconomicRef = useRef(null);
+  const handleReportEconomicChange = useCallback(value => { reportEconomicRef.current = value; }, []);
   const [isNavigationPending, startNavigationTransition] = useTransition();
   const periodLoadRequestRef = useRef(0);
   const initializationStartedRef = useRef(false);
@@ -1206,20 +1211,39 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     reader.readAsArrayBuffer(file);
   }
 
-  async function handleExportExcel() {
-    const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
-    await mapRef.current?.prepareForExport?.();
-    await exportExcelBySed(dataToExport, currentSedId, currentLlaveId);
+  async function handleExportReport(format) {
+    if (reportExportBusyRef.current) return;
+    reportExportBusyRef.current = true;
+    setReportExportStatus('Preparando mapas y reporte...');
+    try {
+      const liveEconomic = reportEconomicRef.current;
+      const economicIsCurrent = liveEconomic?.input && economicAnalysisInput
+        && JSON.stringify(liveEconomic.input) === JSON.stringify(economicAnalysisInput);
+      const model = buildReportModel({
+        sedId: currentSedId, llaveId: showFullSedView ? '' : currentLlaveId, selectedPeriodKeys,
+        faults: visibleFaultPoints, circuitFaults: selectedLlavePoints,
+        network: showFullSedView ? sedOverviewLlaves : currentLlaveData ? [{ llaveId: currentLlaveId, lines: currentLlaveData.lines }] : [],
+        sedCoordinate: currentSedCoord,
+        analysis: analysisPeriodSignature === selectedPeriodSignature ? currentCircuitAnalysis : null,
+        analysisLlaveId: currentLlaveId,
+        selectedSegment: showFullSedView ? null : selectedAnalysisSegment,
+        conclusion: currentAnalysis.note, status: currentAnalysis.status,
+        calls: economicAnalysisInput?.calls, compensation: economicAnalysisInput?.compensation,
+        economic: economicIsCurrent && !showFullSedView ? liveEconomic.simulation : null,
+        economicNote: economicIsCurrent ? liveEconomic.note : ''
+      });
+      if (format === 'excel') await exportExcelBySed(model);
+      else await exportPdfReport(model);
+    } catch (error) {
+      alert(`No se pudo generar el reporte: ${error.message}`);
+    } finally {
+      reportExportBusyRef.current = false;
+      setReportExportStatus('');
+    }
   }
 
-  async function handleExportPdf() {
-    const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
-    await mapRef.current?.prepareForExport?.();
-    await exportPdfReport(dataToExport, currentSedId, currentLlaveId, {
-      status: currentAnalysis.status,
-      note: currentAnalysis.note
-    });
-  }
+  async function handleExportExcel() { await handleExportReport('excel'); }
+  async function handleExportPdf() { await handleExportReport('pdf'); }
 
   async function checkEditPermission() {
     if (!isEditable) {
@@ -2149,6 +2173,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     <>
       <DataSourceBadge dataSource={dataSource} onCloseLocalProject={handleCloseLocalProject} />
       {deepLinkNotice && <div className="sed-deep-link-notice" role="status">{deepLinkNotice}</div>}
+      {reportExportStatus && <div className="frontend-loading-status" role="status" aria-live="polite">{reportExportStatus}</div>}
       {(isAnalyzingCircuit || isNavigationPending) && <div className="frontend-loading-status" role="status" aria-live="polite">
         <span className="frontend-loading-spinner" aria-hidden="true"></span>
         {isAnalyzingCircuit ? 'Analizando circuito...' : navigationLabel}
@@ -2194,6 +2219,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           onFilterSelectedAnalysisSegment={() => { if (selectedAnalysisSegment) setFilterByAnalysisSegment(true); }}
           onShowAllAnalysisFaults={() => setFilterByAnalysisSegment(false)}
           onSaveEconomicSimulation={handleSaveEconomicSimulation}
+          onReportEconomicChange={handleReportEconomicChange}
           onToggleSegmentSelection={handleToggleSegmentSelection}
           onStartEditCableGroup={handleStartEditCableGroup}
           onCancelEditCableGroup={handleCancelEditCableGroup}

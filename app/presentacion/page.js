@@ -9,6 +9,8 @@ import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sor
 import { supabase } from '@/lib/supabase';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
+import { buildReportModel } from '@/lib/reportModel';
+import { derivePeriodKeyFromStartTime } from '@/lib/monthlyFaultImport';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getCachedSeds, getExpectedLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
 import { hydrateLlave } from '@/lib/circuitAnalysis';
@@ -36,6 +38,7 @@ export default function PresentacionPage() {
   const [dataSource, setDataSource] = useState({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
   
   const mapRef = useRef(null);
+  const reportExportBusyRef = useRef(false);
 
   const setMajorOverlayOpen = useCallback((overlayId, isOpen) => {
     setActiveMajorOverlays(current => {
@@ -176,18 +179,26 @@ export default function PresentacionPage() {
     }
   }
 
-  async function handleExportExcel() {
-    const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
-    await exportExcelBySed(dataToExport, currentSedId, currentLlaveId);
+  async function handleExportReport(format) {
+    if (reportExportBusyRef.current) return;
+    reportExportBusyRef.current = true;
+    try {
+      const model = buildReportModel({
+        sedId: currentSedId, llaveId: showFullSedView ? '' : currentLlaveId,
+        faults: filteredPoints,
+        selectedPeriodKeys: [...new Set(filteredPoints.map(f => derivePeriodKeyFromStartTime(f.horaInicio)).filter(Boolean))].sort(),
+        network: showFullSedView ? sedOverviewLlaves : currentLlaveData ? [{ llaveId: currentLlaveId, lines: currentLlaveData.lines }] : [],
+        sedCoordinate: currentSedCoord,
+        status: currentLlaveData?.analysis?.status || 'cargado',
+        conclusion: currentLlaveData?.analysis?.note || ''
+      });
+      if (format === 'excel') await exportExcelBySed(model);
+      else await exportPdfReport(model);
+    } catch (error) { alert(`No se pudo generar el reporte: ${error.message}`); }
+    finally { reportExportBusyRef.current = false; }
   }
-
-  async function handleExportPdf() {
-    const dataToExport = filteredPoints.length > 0 ? filteredPoints : numberedPointsList;
-    await exportPdfReport(dataToExport, currentSedId, currentLlaveId, {
-      status: currentLlaveData?.analysis?.status || 'cargado',
-      note: currentLlaveData?.analysis?.note || ''
-    });
-  }
+  async function handleExportExcel() { await handleExportReport('excel'); }
+  async function handleExportPdf() { await handleExportReport('pdf'); }
 
   // Navegación
   const sedsList = sortSedIds(Object.keys(localDatabase));
