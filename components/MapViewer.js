@@ -6,6 +6,7 @@ import { TILE_LAYERS, MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, FAULT_
 import { getSpiderfyPositions, groupOverlappingPoints } from '@/lib/overlappingMarkers';
 import { safeExternalImageSource, safeExternalNavigationUrl } from '@/lib/externalAssetSafety';
 import { getLineCalibreDisplay } from '@/lib/circuitAnalysis';
+import { createManualEdgeRefsForLine } from '@/lib/manualAnalysisUnits';
 
 const ANALYSIS_SELECTION_MAX_ZOOM = 19;
 
@@ -44,6 +45,7 @@ const MapViewer = forwardRef(({
   cableGroups = [],
   isSegmentSelectionMode,
   selectedLineIds = [],
+  selectedManualEdgeIds = [],
   selectedAnalysisSegmentId = null,
   selectedAnalysisSegmentEdges = [],
   hasSelectedAnalysisSegment = false,
@@ -346,6 +348,7 @@ const MapViewer = forwardRef(({
       const zoom = mapInstanceRef.current.getZoom();
       const weight = getWeightForZoom(zoom);
       const analysisSegmentActive = hasSelectedAnalysisSegment && selectedAnalysisSegmentEdges.length > 0;
+      const selectedManualEdgeIdSet = new Set(selectedManualEdgeIds);
 
       networkLlaves.forEach((entry) => {
         (Array.isArray(entry?.lines) ? entry.lines : []).forEach((line, index) => {
@@ -355,7 +358,7 @@ const MapViewer = forwardRef(({
             const entryCableGroups = entry.cableGroups || [];
             const cableGroup = entryCableGroups.find(group => group.lineIds?.map(String).includes(lineId));
             const calibreDisplay = getLineCalibreDisplay(line, entryCableGroups);
-            const isSelected = entry.isSelected && selectedLineIds.includes(lineId);
+            const isSelected = entry.isSelected && selectedManualEdgeIds.length === 0 && selectedLineIds.includes(lineId);
             const baseColor = showFullSedView ? entry.color : (cableGroup?.color || lineColor);
             const baseWeight = showFullSedView && entry.isSelected ? weight + 1.5 : cableGroup && !showFullSedView ? weight + 1.5 : weight;
 
@@ -366,9 +369,19 @@ const MapViewer = forwardRef(({
             }).addTo(networkGroup);
 
             if (isSegmentSelectionMode && entry.isSelected) {
-              polyline.on('click', (event) => {
-                L.DomEvent.stopPropagation(event);
-                onLineClick?.(line.id ?? index);
+              createManualEdgeRefsForLine(line, index).forEach((edgeRef) => {
+                const start = fixedCoords[edgeRef.startVertexIndex];
+                const end = fixedCoords[edgeRef.endVertexIndex];
+                if (!start || !end) return;
+                L.polyline([start, end], {
+                  color: '#ffca28',
+                  weight: weight + 10,
+                  opacity: 0.01,
+                  interactive: true
+                }).on('click', (event) => {
+                  L.DomEvent.stopPropagation(event);
+                  onLineClick?.(line.id ?? index, edgeRef);
+                }).addTo(networkGroup);
               });
             }
 
@@ -400,17 +413,25 @@ const MapViewer = forwardRef(({
           }).addTo(networkGroup);
         });
 
+      }
+
+      if (selectedManualEdgeIdSet.size > 0) {
         (Array.isArray(llaveData?.lines) ? llaveData.lines : []).forEach((line, index) => {
-          const lineId = String(line.id ?? index);
           const lineCoords = getDrawableLineCoordinates(line?.coords);
-          if (!selectedLineIds.includes(lineId) || !lineCoords.length) return;
-          L.polyline(lineCoords, {
-            color: '#ffca28',
-            weight: weight + 5,
-            opacity: 1,
-            dashArray: '7, 5',
-            interactive: false
-          }).addTo(networkGroup);
+          if (!lineCoords.length) return;
+          createManualEdgeRefsForLine(line, index).forEach((edgeRef) => {
+            if (!selectedManualEdgeIdSet.has(edgeRef.edgeId)) return;
+            const start = lineCoords[edgeRef.startVertexIndex];
+            const end = lineCoords[edgeRef.endVertexIndex];
+            if (!start || !end) return;
+            L.polyline([start, end], {
+              color: '#ffca28',
+              weight: weight + 5,
+              opacity: 1,
+              dashArray: '7, 5',
+              interactive: false
+            }).addTo(networkGroup);
+          });
         });
       }
     }
@@ -486,7 +507,7 @@ const MapViewer = forwardRef(({
       mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 18, animate: true });
       fittedCircuitRef.current = circuitId;
     }
-  }, [llaveData, sedOverviewLlaves, showFullSedView, selectedLlaveId, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, selectedAnalysisSegmentEdges, hasSelectedAnalysisSegment, onLineClick, isPresentationMode, isEditable, circuitId]);
+  }, [llaveData, sedOverviewLlaves, showFullSedView, selectedLlaveId, sedCoord, sedId, currentTheme, sedsMasterDB, cableGroups, isSegmentSelectionMode, selectedLineIds, selectedManualEdgeIds, selectedAnalysisSegmentEdges, hasSelectedAnalysisSegment, onLineClick, isPresentationMode, isEditable, circuitId]);
 
   useEffect(() => {
     if (!selectedAnalysisSegmentId) {

@@ -5,6 +5,7 @@ import FaultTable from './FaultTable';
 import ProjectPanel from './ProjectPanel';
 import DataManagementPanel from './DataManagementPanel';
 import SearchableSedSelect from './SearchableSedSelect';
+import EconomicAnalysisPanel from './EconomicAnalysisPanel';
 import { CIRCUIT_STATUSES } from '@/lib/circuitAnalysis';
 import { describeParetoCandidates } from '@/lib/branchIndicators';
 import { sortLlaveIds, sortSedIds } from '@/lib/navigationSort';
@@ -52,12 +53,15 @@ export default function Sidebar({
   isSegmentSelectionMode,
   selectedLineCount,
   selectedDistance,
+  economicAnalysisInput,
+  economicSimulations,
   onSaveCircuitNote,
   onSaveCircuitStatus,
   onAnalyzeCircuit,
   onSelectAnalysisSegment,
   onFilterSelectedAnalysisSegment,
   onShowAllAnalysisFaults,
+  onSaveEconomicSimulation,
   onToggleSegmentSelection,
   onStartEditCableGroup,
   onCancelEditCableGroup,
@@ -121,6 +125,7 @@ export default function Sidebar({
   const [cableNote, setCableNote] = useState('');
   const [statusDraft, setStatusDraft] = useState('cargado');
   const [editingCableGroupId, setEditingCableGroupId] = useState(null);
+  const [showEconomicAnalysis, setShowEconomicAnalysis] = useState(false);
 
   useEffect(() => setNoteDraft(circuitNote || ''), [circuitNote, currentSedId, currentLlaveId]);
   useEffect(() => setStatusDraft(circuitStatus || 'cargado'), [circuitStatus, currentSedId, currentLlaveId]);
@@ -140,7 +145,12 @@ export default function Sidebar({
     setCableCalibre('');
     setCableColor(CABLE_COLORS[1]);
     setCableNote('');
+    setShowEconomicAnalysis(false);
   }, [currentSedId, currentLlaveId]);
+
+  useEffect(() => {
+    if (!selectedAnalysisSegmentId) setShowEconomicAnalysis(false);
+  }, [selectedAnalysisSegmentId]);
 
   useEffect(() => {
     fetch('/seds_master_db.min.json')
@@ -678,6 +688,23 @@ export default function Sidebar({
                             Mostrar todas
                           </button>
                         </div>
+                        <button
+                          className="btn btn-green"
+                          type="button"
+                          style={{ width: '100%', marginTop: '6px' }}
+                          onClick={() => setShowEconomicAnalysis(value => !value)}
+                        >
+                          {showEconomicAnalysis ? 'Cerrar análisis económico' : 'Analizar económicamente'}
+                        </button>
+                        {showEconomicAnalysis && selectedAnalysisSegment && (
+                          <EconomicAnalysisPanel
+                            key={selectedAnalysisSegment.analysisSegmentId}
+                            input={economicAnalysisInput}
+                            canSave={isEditable}
+                            storedSimulations={economicSimulations || []}
+                            onSaveSnapshot={onSaveEconomicSimulation}
+                          />
+                        )}
                         <div style={{ marginTop: '3px', color: 'var(--text-muted)' }}>
                           Mostrando {filteredFaultPoints.length} de {analysisCircuitFaultTotal} fallas{filterByAnalysisSegment ? ' · filtro activo' : ''}.
                         </div>
@@ -798,7 +825,7 @@ export default function Sidebar({
                   <button 
                     className={`btn ${editingCableGroupId ? 'btn-orange' : 'btn-green'}`} 
                     style={{ flex: 1 }} 
-                    disabled={!isEditable || !cableCalibre.trim() || selectedLineCount === 0}
+                    disabled={!isEditable || selectedLineCount === 0}
                     onClick={() => {
                       onSaveCableGroup({
                         id: editingCableGroupId,
@@ -814,7 +841,7 @@ export default function Sidebar({
                       setCableNote('');
                     }}
                   >
-                    <i className={editingCableGroupId ? 'fa-solid fa-check' : 'fa-solid fa-floppy-disk'}></i> {editingCableGroupId ? 'Actualizar calibre' : 'Guardar calibre'}
+                    <i className={editingCableGroupId ? 'fa-solid fa-check' : 'fa-solid fa-floppy-disk'}></i> {editingCableGroupId ? 'Actualizar tramo' : 'Guardar tramo'}
                   </button>
                   {editingCableGroupId && (
                     <button 
@@ -856,7 +883,7 @@ export default function Sidebar({
                 >
                   <span style={{ width: 12, height: 12, borderRadius: 2, background: group.color, flexShrink: 0 }}></span>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    <b>{group.calibre}</b>{group.name ? ` · ${group.name}` : ''}{group.note ? ` · ${group.note}` : ''} · {Number(group.distance || 0).toFixed(0)} m
+                    <b>{group.calibre || 'No informado'}</b>{group.name ? ` · ${group.name}` : ''}{group.note ? ` · ${group.note}` : ''} · {Number(group.distance || 0).toFixed(0)} m
                   </span>
                   <button 
                     className="btn btn-outline" 

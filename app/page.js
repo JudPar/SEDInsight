@@ -24,9 +24,12 @@ import { assertProjectReadyForDownload, validateProject } from '@/lib/projectVal
 import { createSupabaseProjectRepository, getMainDatabaseState } from '@/lib/projectImport';
 import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging, finalizeStagedProject, stageProject } from '@/lib/projectStaging';
 import { deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, resolveActivePeriodSelection, summarizePeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
-import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFaultCause } from '@/lib/monthlyFaultImport';
-import { buildSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
+import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFaultCause, readCallCountFromRow } from '@/lib/monthlyFaultImport';
+import { buildSedPeriodMetrics, reconcileSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
 import { buildSedPath, buildSedUrl, normalizeSedIdParam, resolveSedDeepLink } from '@/lib/sedLinks';
+import { normalizeSedId } from '@/lib/sedUtils';
+import { buildManualEdgeCatalog, resolveManualGroupEdgeRefs } from '@/lib/manualAnalysisUnits';
+import { buildEconomicAnalysisInput } from '@/lib/economicAnalysisInput';
 import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
 import {
   COORD_SOURCE,
@@ -131,8 +134,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [relocatingPointIndex, setRelocatingPointIndex] = useState(null);
   const [isSegmentSelectionMode, setIsSegmentSelectionMode] = useState(false);
   const [selectedLineIds, setSelectedLineIds] = useState([]);
+  const [selectedManualEdgeRefs, setSelectedManualEdgeRefs] = useState([]);
   const [circuitPhase1Analysis, setCircuitPhase1Analysis] = useState(null);
   const [analysisCircuitKey, setAnalysisCircuitKey] = useState('');
+  const [analysisPeriodSignature, setAnalysisPeriodSignature] = useState('');
   const [selectedAnalysisSegmentId, setSelectedAnalysisSegmentId] = useState(null);
   const [filterByAnalysisSegment, setFilterByAnalysisSegment] = useState(false);
   const [deletingPointId, setDeletingPointId] = useState(null);
@@ -143,6 +148,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [selectedPeriodKeys, setSelectedPeriodKeys] = useState([]);
   const [periodSupport, setPeriodSupport] = useState(false);
   const [sedMonthlyMetrics, setSedMonthlyMetrics] = useState([]);
+  const [circuitMonthlyMetrics, setCircuitMonthlyMetrics] = useState([]);
   const [workProjects, setWorkProjects] = useState([]);
   const [activeWorkSedIds, setActiveWorkSedIds] = useState([]);
   const [mainDataLoaded, setMainDataLoaded] = useState(false);
@@ -293,6 +299,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       const compensationResult = periodsResult.error
         ? { data: null, error: periodsResult.error }
         : await supabase.from('sed_monthly_metrics').select('sed_id, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false });
+      const circuitCompensationResult = periodsResult.error
+        ? { data: null, error: periodsResult.error }
+        : await supabase.from('circuit_monthly_metrics').select('sed_id, llave_code, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false });
       
       if (!sedsError && sedsData) {
         const db = {};
@@ -351,6 +360,14 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             createdAt: row.created_at,
             updatedAt: row.updated_at
           })) : []);
+          setCircuitMonthlyMetrics(!circuitCompensationResult.error ? (circuitCompensationResult.data || []).map(row => ({
+            sedId: row.sed_id,
+            llaveCode: row.llave_code,
+            periodKey: row.period_key,
+            compensation: Number(row.compensation),
+            createdAt: row.created_at,
+            updatedAt: row.updated_at
+          })) : []);
           if (!projectsResult.error) setWorkProjects((projectsResult.data || []).map(project => ({ ...project, format: GEOPLUZ_PROJECT_CONFIG_FORMAT, version: GEOPLUZ_PROJECT_CONFIG_VERSION })));
         }
         setDataSource({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
@@ -383,11 +400,13 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     });
     updateSelectedPeriodKeys(localSelection);
     setSedMonthlyMetrics([]);
+    setCircuitMonthlyMetrics([]);
     setPeriodSupport(false);
     setIsAddPointMode(false);
     setRelocatingPointIndex(null);
     setIsSegmentSelectionMode(false);
     setSelectedLineIds([]);
+    setSelectedManualEdgeRefs([]);
     setEditingPointIndex(null);
     setIsFormOpen(false);
     markLocalProjectExpected(project, { editable });
@@ -610,6 +629,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     .filter(item => activeWorkSedIds.length === 0 || activeWorkSedIds.includes(item.sedId))
     .map((item, index) => ({ ...item, rank: index + 1 }));
   const selectedSedPeriodSummary = sedFaultRanking.find(item => item.sedId === currentSedId) || null;
+  const selectedSedMetricReconciliation = currentSedId
+    ? reconcileSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, selectedPeriodKeys, currentSedId)
+    : null;
   const selectedPeriodLabel = formatSelectedPeriodLabel(selectedPeriodKeys);
   const selectedLlavePoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,
@@ -820,15 +842,17 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     const ticketVal = String(getFlexibleValue(pt, ['ticket', 'nro', 'incidencia', 'id', 'nroticket'])).trim();
     const sedLlaveVal = String(getFlexibleValue(pt, ['sedllave', 'sed_llave', 'circuito']) || fallbackSedLlave);
     const partes = sedLlaveVal.split('-');
-    const sedVal = String(pt.sed || partes[0] || 'SED');
+    const sedVal = normalizeSedId(pt.sed_id || pt.sed || partes[0] || 'SED');
     const llaveSysVal = String(pt.llaveSistema || partes[1] || 'LLAVE');
     const horaInicio = String(getFlexibleValue(pt, ['horainicio', 'hora', 'fecha', 'inicio']) || '');
 
+    const calls = readCallCountFromRow(pt);
     return {
       coords: pt.coords || extractCoordsFromRow(pt),
       ticket: ticketVal || fallbackTicket,
       horaInicio,
       periodKey: derivePeriodKeyFromStartTime(horaInicio),
+      callCount: calls.valid ? calls.value : null,
       zona: String(getFlexibleValue(pt, ['zona', 'distrito', 'area']) || 'Zona Norte'),
       set: String(getFlexibleValue(pt, ['set', 'subestacion']) || 'SET'),
       alimentador: String(getFlexibleValue(pt, ['alimentador', 'alim', 'circuito']) || 'Alim'),
@@ -1676,8 +1700,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   useEffect(() => {
     setIsSegmentSelectionMode(false);
     setSelectedLineIds([]);
+    setSelectedManualEdgeRefs([]);
     setCircuitPhase1Analysis(null);
     setAnalysisCircuitKey('');
+    setAnalysisPeriodSignature('');
     setSelectedAnalysisSegmentId(null);
     setFilterByAnalysisSegment(false);
   }, [currentSedId, currentLlaveId]);
@@ -1705,9 +1731,35 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       .map(edgeId => currentCircuitAnalysis?.topology?.originalEdges?.find(edge => edge.edgeId === edgeId))
       .filter(Boolean)
     : [];
-  const selectedDistance = (currentLlaveData?.lines || [])
-    .filter((line, index) => selectedLineIds.includes(String(line.id ?? index)))
-    .reduce((total, line) => total + (Number(line.length) || 0), 0);
+  const selectedDistance = selectedManualEdgeRefs.reduce((total, ref) => total + (Number(ref.lengthMeters) || 0), 0);
+  const selectedPeriodSignature = selectedPeriodKeys.join('|');
+  const economicAnalysisInput = selectedAnalysisSegment && analysisPeriodSignature === selectedPeriodSignature
+    ? buildEconomicAnalysisInput({
+      sedId: currentSedId,
+      circuitId: currentLlaveId,
+      analysisUnit: selectedAnalysisSegment,
+      selectedPeriodKeys,
+      availablePeriods: faultPeriods,
+      faults: selectedLlavePoints,
+      circuitCompensationRows: circuitMonthlyMetrics,
+      sedMetricReconciliation: selectedSedMetricReconciliation
+    })
+    : null;
+  const economicSimulations = (currentAnalysis.economicSimulations || [])
+    .filter(snapshot => snapshot?.analysisUnitId === selectedAnalysisSegmentId);
+
+  useEffect(() => {
+    if (!currentCircuitAnalysis || !currentLlaveData) return;
+    const linesData = Array.isArray(currentLlaveData.linesData)
+      ? currentLlaveData.linesData
+      : serializeLlaveLines(currentLlaveData);
+    const nextAnalysis = analyzeCircuit(linesData, selectedLlavePoints, { rootCoordinate: currentSedCoord });
+    const nextSelectedSegment = resolveAnalysisSegment(nextAnalysis.analysisSegmentIndicators, selectedAnalysisSegmentId);
+    setCircuitPhase1Analysis(nextAnalysis);
+    setAnalysisPeriodSignature(selectedPeriodSignature);
+    setSelectedAnalysisSegmentId(nextSelectedSegment?.analysisSegmentId || null);
+    if (!nextSelectedSegment) setFilterByAnalysisSegment(false);
+  }, [selectedPeriodSignature]);
 
   async function handleAnalyzeCurrentCircuit() {
     if (!currentLlaveData) return;
@@ -1721,6 +1773,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       const nextSelectedSegment = resolveAnalysisSegment(nextAnalysis.analysisSegmentIndicators, selectedAnalysisSegmentId);
       setCircuitPhase1Analysis(nextAnalysis);
       setAnalysisCircuitKey(currentCircuitKey);
+      setAnalysisPeriodSignature(selectedPeriodSignature);
       setSelectedAnalysisSegmentId(nextSelectedSegment?.analysisSegmentId || null);
       if (!nextSelectedSegment) setFilterByAnalysisSegment(false);
     } finally {
@@ -1737,10 +1790,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     setSelectedAnalysisSegmentId(analysisSegmentId);
   }
 
-  function updateCurrentLlaveAnalysis(updater) {
+  function updateCurrentLlaveAnalysis(updater, { invalidateCircuitAnalysis = true } = {}) {
     if (!isEditable) return;
     if (!currentSedId || !currentLlaveId) return;
-    setCircuitPhase1Analysis(null);
+    if (invalidateCircuitAnalysis) setCircuitPhase1Analysis(null);
     setLocalDatabase(prev => {
       const llave = prev[currentSedId]?.llaves?.[currentLlaveId];
       if (!llave) return prev;
@@ -1767,9 +1820,21 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     updateCurrentLlaveAnalysis(analysis => ({ ...analysis, status }));
   }
 
-  function handleLineClick(lineId) {
+  function handleLineClick(lineId, edgeRef = null) {
     if (!isSegmentSelectionMode) return;
-    setSelectedLineIds(prev => prev.includes(String(lineId)) ? prev.filter(id => id !== String(lineId)) : [...prev, String(lineId)]);
+    const candidates = edgeRef
+      ? [edgeRef]
+      : buildManualEdgeCatalog(currentLlaveData?.lines || []).filter(ref => ref.lineId === String(lineId));
+    if (!candidates.length) return;
+    setSelectedManualEdgeRefs((current) => {
+      const selectedIds = new Set(current.map(ref => ref.edgeId));
+      const remove = candidates.every(ref => selectedIds.has(ref.edgeId));
+      const next = remove
+        ? current.filter(ref => !candidates.some(candidate => candidate.edgeId === ref.edgeId))
+        : [...current, ...candidates.filter(ref => !selectedIds.has(ref.edgeId))];
+      setSelectedLineIds([...new Set(next.map(ref => ref.lineId))]);
+      return next.sort((left, right) => left.edgeId.localeCompare(right.edgeId));
+    });
   }
 
   async function handleToggleSegmentSelection() {
@@ -1778,29 +1843,34 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       if (!allowed) return;
       setIsSegmentSelectionMode(true);
       setSelectedLineIds([]);
+      setSelectedManualEdgeRefs([]);
     } else {
       setIsSegmentSelectionMode(false);
       setSelectedLineIds([]);
+      setSelectedManualEdgeRefs([]);
     }
   }
 
   async function handleStartEditCableGroup(group) {
     const allowed = await checkEditPermission();
     if (!allowed) return false;
-    setSelectedLineIds(group.lineIds ? group.lineIds.map(String) : []);
+    const resolution = resolveManualGroupEdgeRefs(group, currentLlaveData?.lines || []);
+    setSelectedManualEdgeRefs(resolution.edgeRefs);
+    setSelectedLineIds([...new Set(resolution.edgeRefs.map(ref => ref.lineId))]);
     setIsSegmentSelectionMode(true);
     return true;
   }
 
   function handleCancelEditCableGroup() {
     setSelectedLineIds([]);
+    setSelectedManualEdgeRefs([]);
     setIsSegmentSelectionMode(false);
   }
 
   async function handleSaveCableGroup({ id, name, calibre, color, note }) {
     const allowed = await checkEditPermission();
     if (!allowed) return;
-    if (!selectedLineIds.length) return;
+    if (!selectedManualEdgeRefs.length) return;
 
     const groupId = id || `cable-${Date.now()}`;
     const group = {
@@ -1809,19 +1879,32 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       calibre,
       color,
       note: note || '',
-      lineIds: selectedLineIds,
+      analysisUnit: true,
+      lineIds: [...new Set(selectedManualEdgeRefs.map(ref => ref.lineId))],
+      edgeRefs: selectedManualEdgeRefs,
       distance: selectedDistance
     };
 
     updateCurrentLlaveAnalysis(analysis => {
       const existingGroups = analysis.cableGroups || [];
+      const selectedEdgeIds = new Set(selectedManualEdgeRefs.map(ref => ref.edgeId));
       const cleanedGroups = existingGroups
         .filter(item => item.id !== groupId)
-        .map(item => ({
-          ...item,
-          lineIds: item.lineIds ? item.lineIds.filter(lid => !selectedLineIds.includes(String(lid))) : []
-        }))
-        .filter(item => item.lineIds && item.lineIds.length > 0);
+        .map(item => {
+          const isExplicitAnalysisUnit = item?.analysisUnit === true || item?.analysis_unit === true ||
+            (Array.isArray(item?.edgeRefs) && item.edgeRefs.length > 0) ||
+            (Array.isArray(item?.edge_refs) && item.edge_refs.length > 0);
+          if (!isExplicitAnalysisUnit) return item;
+          const remainingRefs = resolveManualGroupEdgeRefs(item, currentLlaveData?.lines || []).edgeRefs
+            .filter(ref => !selectedEdgeIds.has(ref.edgeId));
+          return {
+            ...item,
+            edgeRefs: remainingRefs,
+            lineIds: [...new Set(remainingRefs.map(ref => ref.lineId))],
+            distance: remainingRefs.reduce((total, ref) => total + (Number(ref.lengthMeters) || 0), 0)
+          };
+        })
+        .filter(item => !Array.isArray(item.edgeRefs) || item.edgeRefs.length > 0);
 
       return {
         ...analysis,
@@ -1830,6 +1913,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     });
 
     setSelectedLineIds([]);
+    setSelectedManualEdgeRefs([]);
     setIsSegmentSelectionMode(false);
   }
 
@@ -1846,6 +1930,16 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function handleEnterEditMode() {
     const allowed = await checkEditPermission();
     if (allowed) setIsPresentationMode(false);
+  }
+
+  async function handleSaveEconomicSimulation(snapshot) {
+    const allowed = await checkEditPermission();
+    if (!allowed || !snapshot || snapshot.analysisUnitId !== selectedAnalysisSegmentId) return false;
+    updateCurrentLlaveAnalysis(analysis => ({
+      ...analysis,
+      economicSimulations: [...(analysis.economicSimulations || []), snapshot]
+    }), { invalidateCircuitAnalysis: false });
+    return true;
   }
 
   function handleEnterPresentationMode() {
@@ -1989,14 +2083,17 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           selectedAnalysisSegmentId={selectedAnalysisSegmentId}
           filterByAnalysisSegment={filterByAnalysisSegment}
           isSegmentSelectionMode={isSegmentSelectionMode}
-          selectedLineCount={selectedLineIds.length}
+          selectedLineCount={selectedManualEdgeRefs.length}
           selectedDistance={selectedDistance}
+          economicAnalysisInput={economicAnalysisInput}
+          economicSimulations={economicSimulations}
           onSaveCircuitNote={handleSaveCircuitNote}
           onSaveCircuitStatus={handleSaveCircuitStatus}
           onAnalyzeCircuit={handleAnalyzeCurrentCircuit}
           onSelectAnalysisSegment={handleSelectAnalysisSegment}
           onFilterSelectedAnalysisSegment={() => { if (selectedAnalysisSegment) setFilterByAnalysisSegment(true); }}
           onShowAllAnalysisFaults={() => setFilterByAnalysisSegment(false)}
+          onSaveEconomicSimulation={handleSaveEconomicSimulation}
           onToggleSegmentSelection={handleToggleSegmentSelection}
           onStartEditCableGroup={handleStartEditCableGroup}
           onCancelEditCableGroup={handleCancelEditCableGroup}
@@ -2071,6 +2168,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           cableGroups={currentAnalysis.cableGroups || []}
           isSegmentSelectionMode={isSegmentSelectionMode}
           selectedLineIds={selectedLineIds}
+          selectedManualEdgeIds={selectedManualEdgeRefs.map(ref => ref.edgeId)}
           selectedAnalysisSegmentId={selectedAnalysisSegmentId}
           selectedAnalysisSegmentEdges={selectedAnalysisSegmentEdges}
           hasSelectedAnalysisSegment={Boolean(selectedAnalysisSegment)}
