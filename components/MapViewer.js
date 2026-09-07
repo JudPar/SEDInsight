@@ -46,6 +46,7 @@ const MapViewer = forwardRef(({
   isSegmentSelectionMode,
   selectedLineIds = [],
   selectedManualEdgeIds = [],
+  manualSelectionMessage = '',
   selectedAnalysisSegmentId = null,
   selectedAnalysisSegmentEdges = [],
   hasSelectedAnalysisSegment = false,
@@ -109,7 +110,7 @@ const MapViewer = forwardRef(({
     if (!map || !pointOrCoords) return;
 
     const point = !Array.isArray(pointOrCoords) && pointOrCoords.coords ? pointOrCoords : null;
-    const coords = point?.coords || pointOrCoords;
+    const coords = point?.mapCoords || point?.coords || pointOrCoords;
     const target = Array.isArray(coords[0]) ? coords[0] : coords;
     const targetIdentity = point ? getFaultIdentity(point) : null;
     const targetZoom = Math.max(map.getZoom(), Math.min(preferredZoom, MAP_MAX_ZOOM));
@@ -564,6 +565,9 @@ const MapViewer = forwardRef(({
            </div>`
         : '<p style="margin: 4px 0; color: #888; font-style: italic;">Sin Link de Croquis</p>';
       const notaHtml = pt.nota ? `<p style="margin: 3px 0;"><b>📝 Nota Específica:</b> ${escapeHtml(pt.nota)}</p>` : '';
+      const relocationHtml = pt.relocatedViaClient
+        ? '<p style="margin: 4px 0; color: #00695c;"><b>Ubicación ajustada desde suministro</b></p>'
+        : '';
       const horaHtml = pt.horaInicio ? `<p style="margin: 3px 0;"><b>🕒 Hora de Inicio:</b> ${escapeHtml(pt.horaInicio)}</p>` : '';
       const causaBadge = `<span style="display: inline-block; background-color: ${safeMarkerColor(causeCat.color, '#607d8b')}; color: ${safeMarkerColor(causeCat.textColor, '#ffffff')}; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px; margin-left: 4px;">${escapeHtml(causeCat.label)}</span>`;
       const causaHtml = `<p style="margin: 3px 0;"><b>💡 Causa:</b> ${escapeHtml(pt.causa || causeCat.label)} ${causaBadge}</p>`;
@@ -588,6 +592,7 @@ const MapViewer = forwardRef(({
           <p style="margin: 3px 0;"><b>Falla Real:</b> ${escapeHtml(pt.falla || pt.fallaReal || '-')}</p>
           ${causaHtml}
           <p style="margin: 3px 0;"><b>Suministro:</b> ${escapeHtml(pt.suministro || '-')}</p>
+          ${relocationHtml}
           ${notaHtml}
           ${croquisHtml}
           ${fotosHtml}
@@ -652,11 +657,12 @@ const MapViewer = forwardRef(({
 
       const projectedItems = [];
       faultPoints.forEach((pt, pointIndex) => {
-        if (!pt.coords) return;
+        const visibleCoords = pt.mapCoords || pt.coords;
+        if (!visibleCoords) return;
         const displayNum = pt.localNumber || pt.number || '';
         let coordsList = [];
-        if (Array.isArray(pt.coords)) {
-          coordsList = Array.isArray(pt.coords[0]) ? pt.coords.map(c => fixCoord(c)) : [fixCoord(pt.coords)];
+        if (Array.isArray(visibleCoords)) {
+          coordsList = Array.isArray(visibleCoords[0]) ? visibleCoords.map(c => fixCoord(c)) : [fixCoord(visibleCoords)];
         }
         if (coordsList.length === 0) return;
 
@@ -792,7 +798,7 @@ const MapViewer = forwardRef(({
           fontWeight: 600,
           transition: 'top 0.3s ease'
         }}>
-          Haz clic en los tramos para seleccionarlos.
+          {manualSelectionMessage || 'Haz clic en el tramo inicial y luego en el tramo final.'}
         </div>
       )}
 

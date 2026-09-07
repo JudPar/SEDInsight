@@ -53,6 +53,7 @@ export default function Sidebar({
   isSegmentSelectionMode,
   selectedLineCount,
   selectedDistance,
+  manualSelectionMessage,
   economicAnalysisInput,
   economicSimulations,
   onSaveCircuitNote,
@@ -830,7 +831,7 @@ export default function Sidebar({
                   Seleccionados: <b style={{ color: 'var(--text-primary)' }}>{selectedLineCount}</b> · Longitud: <b style={{ color: 'var(--text-primary)' }}>{selectedDistance.toFixed(0)} m</b>
                 </div>
                 <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                  💡 Haz clic en los tramos del mapa para sumarlos o quitarlos.
+                  💡 {manualSelectionMessage || 'Haz clic en el tramo inicial y luego en el tramo final.'}
                 </div>
               </div>
             )}

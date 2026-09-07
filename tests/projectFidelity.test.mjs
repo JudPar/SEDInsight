@@ -18,12 +18,120 @@ import {
 import { classifyExternalReference, safeExternalNavigationUrl } from '../lib/externalAssetSafety.js';
 import { buildAnalysisBranchFaultView, calculateBranchIndicators, calculateParetoPriority, describeParetoCandidates, resolveAnalysisBranch } from '../lib/branchIndicators.js';
 import { buildCircuitTopology, NODE_SNAP_TOLERANCE_METERS, TERMINAL_SPUR_MAX_METERS } from '../lib/circuitTopology.js';
-import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '../lib/analysisSegments.js';
+import { applyAnalyticalFaultCoordinates, buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '../lib/analysisSegments.js';
+import { buildManualEdgeCatalog, createManualAnalysisUnits, findUniqueAnalyticalEdgePath } from '../lib/manualAnalysisUnits.js';
 import { mapProjectForSupabase } from '../lib/projectImport.js';
 import { createProjectDocument, projectToInternalModel } from '../lib/projectMappers.js';
 import { assertProjectReadyForDownload, validateProject } from '../lib/projectValidation.js';
 
 const ANALYSIS_MARKER = '__geopluz_circuit_analysis__';
+
+test('two analytical edge clicks resolve the unique tree path without side branches', () => {
+  const meter = 1 / 111195.08;
+  const lines = [
+    { id: 'a', coords: [[0, -30 * meter], [0, 0]] },
+    { id: 'b', coords: [[0, 0], [0, 30 * meter]] },
+    { id: 'c', coords: [[0, 30 * meter], [0, 60 * meter]] },
+    { id: 'side', coords: [[0, 30 * meter], [30 * meter, 30 * meter]] }
+  ];
+  const result = analyzeCircuit(lines, [], { terminalSpurMaxMeters: 0 });
+  const catalog = buildManualEdgeCatalog(lines);
+  const byLine = lineId => catalog.find(ref => ref.lineId === lineId).edgeId;
+  const path = findUniqueAnalyticalEdgePath(result.topology, byLine('a'), byLine('c'));
+
+  assert.equal(path.status, 'found');
+  assert.deepEqual(path.edgeIds, [byLine('a'), byLine('b'), byLine('c')]);
+  assert.ok(!path.edgeIds.includes(byLine('side')));
+  assert.deepEqual(findUniqueAnalyticalEdgePath(result.topology, byLine('a'), byLine('c')), path);
+});
+
+test('path selection rejects disconnected and non-radial analytical sectors', () => {
+  const meter = 1 / 111195.08;
+  const disconnected = [
+    { id: 'left', coords: [[0, 0], [0, 20 * meter]] },
+    { id: 'right', coords: [[0, 100 * meter], [0, 120 * meter]] }
+  ];
+  const disconnectedResult = analyzeCircuit(disconnected, [], { terminalSpurMaxMeters: 0 });
+  const disconnectedRefs = buildManualEdgeCatalog(disconnected);
+  assert.equal(findUniqueAnalyticalEdgePath(
+    disconnectedResult.topology,
+    disconnectedRefs[0].edgeId,
+    disconnectedRefs[1].edgeId
+  ).status, 'not_found');
+
+  const cycle = [
+    { id: 'south', coords: [[0, 0], [0, 20 * meter]] },
+    { id: 'east', coords: [[0, 20 * meter], [20 * meter, 20 * meter]] },
+    { id: 'north', coords: [[20 * meter, 20 * meter], [20 * meter, 0]] },
+    { id: 'west', coords: [[20 * meter, 0], [0, 0]] }
+  ];
+  const cycleResult = analyzeCircuit(cycle, [], { terminalSpurMaxMeters: 0 });
+  const cycleRefs = buildManualEdgeCatalog(cycle);
+  assert.equal(findUniqueAnalyticalEdgePath(cycleResult.topology, cycleRefs[0].edgeId, cycleRefs[2].edgeId).status, 'ambiguous');
+});
+
+test('manual analysis restores a unique real intra-node connector without adding lateral edges', () => {
+  const meter = 1 / 111195.08;
+  const lines = [
+    { id: 'left', coords: [[0, -25 * meter], [0, 0]] },
+    { id: 'connector', coords: [[0, 0], [0, meter]] },
+    { id: 'right', coords: [[0, meter], [0, 26 * meter]] },
+    { id: 'lateral', coords: [[0, meter], [25 * meter, meter]] }
+  ];
+  const base = analyzeCircuit(lines, [], { snapToleranceMeters: 2, terminalSpurMaxMeters: 0 });
+  const refs = buildManualEdgeCatalog(lines);
+  const leftRef = refs.find(ref => ref.lineId === 'left');
+  const rightRef = refs.find(ref => ref.lineId === 'right');
+  const connectorRef = refs.find(ref => ref.lineId === 'connector');
+  const lateralRef = refs.find(ref => ref.lineId === 'lateral');
+  const units = createManualAnalysisUnits([{
+    id: 'selected-route',
+    analysisUnit: true,
+    edgeRefs: [leftRef, rightRef]
+  }], lines, base.topology);
+
+  assert.deepEqual(units[0].edgeIds, [leftRef.edgeId, rightRef.edgeId].sort());
+  assert.deepEqual(units[0].connectorEdgeIds, [connectorRef.edgeId]);
+  assert.ok(!units[0].connectorEdgeIds.includes(lateralRef.edgeId));
+  assert.deepEqual(units[0].gaps, []);
+
+  const marker = { [ANALYSIS_MARKER]: { cableGroups: [{ id: 'selected-route', analysisUnit: true, edgeRefs: [leftRef, rightRef] }] } };
+  const analyzed = analyzeCircuit([...lines, marker], [], { snapToleranceMeters: 2, terminalSpurMaxMeters: 0 });
+  const manual = analyzed.analysisSegmentIndicators.analysisSegments.find(segment => segment.analysisSegmentId === 'manual:selected-route');
+  assert.deepEqual(manual.connectorEdgeIds, [connectorRef.edgeId]);
+  assert.equal(manual.gaps.length, 0);
+});
+
+test('analytical Cliente relocation changes only the marker coordinate and preserves origin', () => {
+  const originalFault = { id: 'fault', coords: [0, 0.0001], suministro: '123' };
+  const assignment = {
+    faultIndex: 0,
+    analyticallyRelocated: true,
+    originalCoordinate: [0, 0.0001],
+    analyticalCoordinate: [0, 0]
+  };
+  const visible = applyAnalyticalFaultCoordinates([originalFault], { assignments: [assignment] });
+
+  assert.deepEqual(originalFault.coords, [0, 0.0001]);
+  assert.deepEqual(visible[0].coords, [0, 0.0001]);
+  assert.deepEqual(visible[0].mapCoords, [0, 0]);
+  assert.deepEqual(visible[0].originalCoordinate, [0, 0.0001]);
+  assert.equal(visible[0].relocatedViaClient, true);
+
+  const ambiguous = applyAnalyticalFaultCoordinates([originalFault], { assignments: [{
+    faultIndex: 0,
+    analyticallyRelocated: false,
+    clientRelocationStatus: 'ambiguous',
+    analyticalCoordinate: [0, 0.0001]
+  }] });
+  assert.equal(ambiguous[0], originalFault);
+});
+
+test('map renders relocated Cliente faults at the analytical coordinate with traceability text', () => {
+  const source = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
+  assert.match(source, /const visibleCoords = pt\.mapCoords \|\| pt\.coords/);
+  assert.match(source, /Ubicación ajustada desde suministro/);
+});
 
 function databaseWithLinesData(linesData) {
   return {

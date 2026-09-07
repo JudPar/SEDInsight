@@ -15,8 +15,9 @@ import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, listLocalWorkProjectConfigs, markLocalProjectExpected, removeLocalProject, removeLocalWorkProjectConfig, saveLocalWorkProjectConfig, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
-import { analyzeCircuit, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
-import { buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
+import { analyzeCircuit, analyzeCircuitPhase1, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
+import { applyAnalyticalFaultCoordinates, buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
+import { buildCircuitTopology } from '@/lib/circuitTopology';
 import { GEOPLUZ_PROJECT_FORMAT, parseProjectJson } from '@/lib/projectFormat';
 import { createProjectDocument, projectToInternalModel } from '@/lib/projectMappers';
 import { assertProjectReadyForDownload, validateProject } from '@/lib/projectValidation';
@@ -27,7 +28,7 @@ import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFa
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
 import { buildSedPath, buildSedUrl, normalizeSedIdParam, replaceBrowserPath, resolveSedDeepLink } from '@/lib/sedLinks';
 import { normalizeSedId } from '@/lib/sedUtils';
-import { buildManualEdgeCatalog, resolveManualGroupEdgeRefs } from '@/lib/manualAnalysisUnits';
+import { buildManualEdgeCatalog, findUniqueAnalyticalEdgePath, resolveManualGroupEdgeRefs, splitEdgeIdsIntoConnectedComponents } from '@/lib/manualAnalysisUnits';
 import { buildEconomicAnalysisInput } from '@/lib/economicAnalysisInput';
 import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
 import {
@@ -132,6 +133,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [isSegmentSelectionMode, setIsSegmentSelectionMode] = useState(false);
   const [selectedLineIds, setSelectedLineIds] = useState([]);
   const [selectedManualEdgeRefs, setSelectedManualEdgeRefs] = useState([]);
+  const [manualSelectionTopology, setManualSelectionTopology] = useState(null);
+  const [manualPathStartEdgeId, setManualPathStartEdgeId] = useState(null);
+  const [manualPathSelectionComplete, setManualPathSelectionComplete] = useState(false);
+  const [manualSelectionMessage, setManualSelectionMessage] = useState('');
   const [circuitPhase1Analysis, setCircuitPhase1Analysis] = useState(null);
   const [analysisCircuitKey, setAnalysisCircuitKey] = useState('');
   const [analysisPeriodSignature, setAnalysisPeriodSignature] = useState('');
@@ -410,6 +415,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     setIsSegmentSelectionMode(false);
     setSelectedLineIds([]);
     setSelectedManualEdgeRefs([]);
+    setManualSelectionTopology(null);
+    setManualPathStartEdgeId(null);
+    setManualPathSelectionComplete(false);
+    setManualSelectionMessage('');
     setEditingPointIndex(null);
     setIsFormOpen(false);
     markLocalProjectExpected(project, { editable });
@@ -1727,7 +1736,15 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     selectedAnalysisSegment,
     filterByAnalysisSegment
   );
-  const visibleFaultPoints = showFullSedView ? fullSedPoints : analysisSegmentFaultView.faults;
+  const relocatedCircuitFaultsByOriginalIndex = new Map(applyAnalyticalFaultCoordinates(
+    selectedLlavePoints,
+    currentCircuitAnalysis?.faultAssignment
+  )
+    .filter(point => point?.relocatedViaClient && Number.isInteger(point?.originalIndex))
+    .map(point => [point.originalIndex, point]));
+  const visibleFaultPoints = showFullSedView
+    ? fullSedPoints.map(point => relocatedCircuitFaultsByOriginalIndex.get(point.originalIndex) || point)
+    : analysisSegmentFaultView.faults;
   const sedOverviewLlaves = buildSedOverviewLlaves(localDatabase[currentSedId], currentLlaveId);
   const selectedAnalysisSegmentEdges = selectedAnalysisSegment
     ? [...selectedAnalysisSegment.edgeIds, ...selectedAnalysisSegment.connectorEdgeIds]
@@ -1823,19 +1840,78 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     updateCurrentLlaveAnalysis(analysis => ({ ...analysis, status }));
   }
 
+  function createCurrentManualSelectionTopology() {
+    if (!currentLlaveData) return null;
+    if (currentCircuitAnalysis?.topology) return currentCircuitAnalysis.topology;
+    const linesData = Array.isArray(currentLlaveData.linesData)
+      ? currentLlaveData.linesData
+      : serializeLlaveLines(currentLlaveData);
+    const phase1 = analyzeCircuitPhase1(linesData);
+    return buildCircuitTopology(phase1.physicalSegmentRecords, { rootCoordinate: currentSedCoord });
+  }
+
+  function setManualEdgeSelection(nextRefs) {
+    const sorted = [...nextRefs].sort((left, right) => left.edgeId.localeCompare(right.edgeId));
+    setSelectedManualEdgeRefs(sorted);
+    setSelectedLineIds([...new Set(sorted.map(ref => ref.lineId))]);
+  }
+
   function handleLineClick(lineId, edgeRef = null) {
     if (!isSegmentSelectionMode) return;
     const candidates = edgeRef
       ? [edgeRef]
       : buildManualEdgeCatalog(currentLlaveData?.lines || []).filter(ref => ref.lineId === String(lineId));
     if (!candidates.length) return;
+    const topology = manualSelectionTopology || createCurrentManualSelectionTopology();
+    if (!topology) return;
+    if (!manualSelectionTopology) setManualSelectionTopology(topology);
+    const analyticalEdgeIds = new Set((topology.edges || []).map(edge => edge.edgeId));
+    const analyticalCandidates = candidates.filter(ref => analyticalEdgeIds.has(ref.edgeId));
+    if (!analyticalCandidates.length) {
+      setManualSelectionMessage('Ese tramo es visible, pero está excluido de la red analítica.');
+      return;
+    }
+
+    if (!manualPathSelectionComplete) {
+      const clicked = analyticalCandidates[0];
+      if (!manualPathStartEdgeId) {
+        setManualEdgeSelection([clicked]);
+        setManualPathStartEdgeId(clicked.edgeId);
+        setManualSelectionMessage('Inicio fijado. Haz clic en el tramo final del recorrido.');
+        return;
+      }
+      const path = findUniqueAnalyticalEdgePath(topology, manualPathStartEdgeId, clicked.edgeId);
+      if (path.status !== 'found') {
+        setManualSelectionMessage(path.status === 'ambiguous'
+          ? 'Hay más de un camino posible: la topología no es radial en este sector.'
+          : 'No existe un camino analítico entre los dos puntos seleccionados.');
+        return;
+      }
+      const catalogByEdgeId = new Map(buildManualEdgeCatalog(currentLlaveData?.lines || []).map(ref => [ref.edgeId, ref]));
+      const pathRefs = path.edgeIds.map(edgeId => catalogByEdgeId.get(edgeId)).filter(Boolean);
+      if (pathRefs.length !== path.edgeIds.length) {
+        setManualSelectionMessage('El recorrido contiene geometría que no puede seleccionarse visualmente.');
+        return;
+      }
+      setManualEdgeSelection(pathRefs);
+      setManualPathStartEdgeId(null);
+      setManualPathSelectionComplete(true);
+      setManualSelectionMessage(`Recorrido completo seleccionado: ${pathRefs.length} tramos. Puedes ajustarlo manualmente.`);
+      return;
+    }
+
     setSelectedManualEdgeRefs((current) => {
       const selectedIds = new Set(current.map(ref => ref.edgeId));
-      const remove = candidates.every(ref => selectedIds.has(ref.edgeId));
+      const remove = analyticalCandidates.every(ref => selectedIds.has(ref.edgeId));
       const next = remove
-        ? current.filter(ref => !candidates.some(candidate => candidate.edgeId === ref.edgeId))
-        : [...current, ...candidates.filter(ref => !selectedIds.has(ref.edgeId))];
+        ? current.filter(ref => !analyticalCandidates.some(candidate => candidate.edgeId === ref.edgeId))
+        : [...current, ...analyticalCandidates.filter(ref => !selectedIds.has(ref.edgeId))];
+      if (next.length > 1 && splitEdgeIdsIntoConnectedComponents(next.map(ref => ref.edgeId), topology).length > 1) {
+        setManualSelectionMessage('Ese ajuste dejaría el recorrido desconectado y no se aplicó.');
+        return current;
+      }
       setSelectedLineIds([...new Set(next.map(ref => ref.lineId))]);
+      setManualSelectionMessage('Recorrido ajustado manualmente.');
       return next.sort((left, right) => left.edgeId.localeCompare(right.edgeId));
     });
   }
@@ -1844,6 +1920,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     if (!isSegmentSelectionMode) {
       const allowed = await checkEditPermission();
       if (!allowed) return;
+      setManualSelectionTopology(createCurrentManualSelectionTopology());
+      setManualPathStartEdgeId(null);
+      setManualPathSelectionComplete(false);
+      setManualSelectionMessage('Haz clic en el tramo inicial y luego en el tramo final.');
       setIsSegmentSelectionMode(true);
       setSelectedLineIds([]);
       setSelectedManualEdgeRefs([]);
@@ -1851,6 +1931,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       setIsSegmentSelectionMode(false);
       setSelectedLineIds([]);
       setSelectedManualEdgeRefs([]);
+      setManualSelectionTopology(null);
+      setManualPathStartEdgeId(null);
+      setManualPathSelectionComplete(false);
+      setManualSelectionMessage('');
     }
   }
 
@@ -1858,6 +1942,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     const allowed = await checkEditPermission();
     if (!allowed) return false;
     const resolution = resolveManualGroupEdgeRefs(group, currentLlaveData?.lines || []);
+    setManualSelectionTopology(createCurrentManualSelectionTopology());
+    setManualPathStartEdgeId(null);
+    setManualPathSelectionComplete(true);
+    setManualSelectionMessage('Tramo cargado. Puedes agregar o quitar segmentos conectados.');
     setSelectedManualEdgeRefs(resolution.edgeRefs);
     setSelectedLineIds([...new Set(resolution.edgeRefs.map(ref => ref.lineId))]);
     setIsSegmentSelectionMode(true);
@@ -1868,6 +1956,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     setSelectedLineIds([]);
     setSelectedManualEdgeRefs([]);
     setIsSegmentSelectionMode(false);
+    setManualSelectionTopology(null);
+    setManualPathStartEdgeId(null);
+    setManualPathSelectionComplete(false);
+    setManualSelectionMessage('');
   }
 
   async function handleSaveCableGroup({ id, name, calibre, color, note }) {
@@ -1918,6 +2010,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     setSelectedLineIds([]);
     setSelectedManualEdgeRefs([]);
     setIsSegmentSelectionMode(false);
+    setManualSelectionTopology(null);
+    setManualPathStartEdgeId(null);
+    setManualPathSelectionComplete(false);
+    setManualSelectionMessage('');
   }
 
   async function handleDeleteCableGroup(groupId) {
@@ -2088,6 +2184,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           isSegmentSelectionMode={isSegmentSelectionMode}
           selectedLineCount={selectedManualEdgeRefs.length}
           selectedDistance={selectedDistance}
+          manualSelectionMessage={manualSelectionMessage}
           economicAnalysisInput={economicAnalysisInput}
           economicSimulations={economicSimulations}
           onSaveCircuitNote={handleSaveCircuitNote}
@@ -2172,6 +2269,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           isSegmentSelectionMode={isSegmentSelectionMode}
           selectedLineIds={selectedLineIds}
           selectedManualEdgeIds={selectedManualEdgeRefs.map(ref => ref.edgeId)}
+          manualSelectionMessage={manualSelectionMessage}
           selectedAnalysisSegmentId={selectedAnalysisSegmentId}
           selectedAnalysisSegmentEdges={selectedAnalysisSegmentEdges}
           hasSelectedAnalysisSegment={Boolean(selectedAnalysisSegment)}

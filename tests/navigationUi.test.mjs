@@ -79,7 +79,8 @@ test('editing and presentation selectors share natural sorting without changing 
 
   assert.match(sidebar, /sortLlaveIds\(Object\.keys\(seds\[currentSedId\]\.llaves\)\)/);
   assert.match(page, /analyzeCircuit\(linesData, selectedLlavePoints,/);
-  assert.match(page, /showFullSedView \? fullSedPoints : analysisSegmentFaultView\.faults/);
+  assert.match(page, /showFullSedView\s*\? fullSedPoints\.map/);
+  assert.match(page, /: analysisSegmentFaultView\.faults/);
   assert.match(page, /points=\{visibleFaultPoints\}/);
 });
 

@@ -58,7 +58,8 @@ test('UI keeps circuit analysis scoped to selectedLlavePoints while the map rece
   const mapSource = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
 
   assert.match(pageSource, /analyzeCircuit\(linesData, selectedLlavePoints,/);
-  assert.match(pageSource, /showFullSedView \? fullSedPoints : analysisSegmentFaultView\.faults/);
+  assert.match(pageSource, /showFullSedView\s*\? fullSedPoints\.map/);
+  assert.match(pageSource, /: analysisSegmentFaultView\.faults/);
   assert.match(sidebarSource, /Ver SED completa/);
   assert.match(sidebarSource, /Ver solo llave/);
   assert.match(sidebarSource, /Análisis: \{currentLlaveId\}/);
