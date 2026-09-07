@@ -26,6 +26,9 @@ function formatLoadDate(value) {
 }
 
 export default function DataManagementPanel({
+  expanded = false,
+  onSectionToggle,
+  sectionRef,
   seds,
   faultPoints,
   periods,
@@ -210,8 +213,8 @@ export default function DataManagementPanel({
     }
   }
 
-  return <details className="sidebar-section" open>
-    <summary><span><i className="fa-solid fa-database"></i> Gestión de datos</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+  return <details ref={sectionRef} className="sidebar-section" open={expanded}>
+    <summary onClick={(event) => { event.preventDefault(); onSectionToggle?.(); }}><span><i className="fa-solid fa-database"></i> Gestión de datos</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
     <div className="section-block data-management-panel">
       <div className="data-summary-grid">
         <div><span>Red permanente</span><b>{totals.seds} SED · {totals.llaves} llaves</b></div>

@@ -126,6 +126,34 @@ export default function Sidebar({
   const [statusDraft, setStatusDraft] = useState('cargado');
   const [editingCableGroupId, setEditingCableGroupId] = useState(null);
   const [showEconomicAnalysis, setShowEconomicAnalysis] = useState(false);
+  const [openSection, setOpenSection] = useState(null);
+  const sidebarContentRef = useRef(null);
+  const sectionRefs = useRef(new Map());
+
+  const registerSection = useCallback((sectionId, node) => {
+    if (node) sectionRefs.current.set(sectionId, node);
+    else sectionRefs.current.delete(sectionId);
+  }, []);
+
+  const toggleSection = useCallback((sectionId) => {
+    setOpenSection(current => current === sectionId ? null : sectionId);
+  }, []);
+
+  useEffect(() => {
+    if (!openSection) return undefined;
+    const frameId = window.requestAnimationFrame(() => {
+      const container = sidebarContentRef.current;
+      const section = sectionRefs.current.get(openSection);
+      if (!container || !section) return;
+      const containerTop = container.getBoundingClientRect().top;
+      const sectionTop = section.getBoundingClientRect().top;
+      container.scrollTo({
+        top: Math.max(0, container.scrollTop + sectionTop - containerTop),
+        behavior: 'smooth'
+      });
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [openSection]);
 
   useEffect(() => setNoteDraft(circuitNote || ''), [circuitNote, currentSedId, currentLlaveId]);
   useEffect(() => setStatusDraft(circuitStatus || 'cargado'), [circuitStatus, currentSedId, currentLlaveId]);
@@ -256,8 +284,11 @@ export default function Sidebar({
         </div>
       </div>
 
-      <div className="sidebar-content">
+      <div className="sidebar-content" ref={sidebarContentRef}>
         <ProjectPanel
+          expanded={openSection === 'projects'}
+          onSectionToggle={() => toggleSection('projects')}
+          sectionRef={node => registerSection('projects', node)}
           dataSource={dataSource}
           localProjects={localProjects}
           hasData={hasData || faultPoints.length > 0}
@@ -277,6 +308,9 @@ export default function Sidebar({
         />
 
         <DataManagementPanel
+          expanded={openSection === 'data-management'}
+          onSectionToggle={() => toggleSection('data-management')}
+          sectionRef={node => registerSection('data-management', node)}
           seds={seds}
           faultPoints={faultPoints}
           periods={faultPeriods}
@@ -315,8 +349,8 @@ export default function Sidebar({
           style={{ display: 'none' }}
         />
 
-        <details className="sidebar-section">
-          <summary><span><i className="fa-solid fa-file-arrow-up"></i> Datos temporales locales</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+        <details ref={node => registerSection('temporary-data', node)} className="sidebar-section" open={openSection === 'temporary-data'}>
+          <summary onClick={(event) => { event.preventDefault(); toggleSection('temporary-data'); }}><span><i className="fa-solid fa-file-arrow-up"></i> Datos temporales locales</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
           <div className="card-title">
             <i className="fa-solid fa-layer-group"></i> Importar datos temporales
@@ -408,8 +442,8 @@ export default function Sidebar({
         </div>
         </details>
 
-        <details className="sidebar-section" open>
-          <summary><span><i className="fa-solid fa-sitemap"></i> 2. Navegación y gestión de SEDs</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+        <details ref={node => registerSection('navigation', node)} className="sidebar-section" open={openSection === 'navigation'}>
+          <summary onClick={(event) => { event.preventDefault(); toggleSection('navigation'); }}><span><i className="fa-solid fa-sitemap"></i> 2. Navegación y gestión de SEDs</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
           <div className="card-title">
             <i className="fa-solid fa-location-crosshairs"></i> Selección de circuito
@@ -491,8 +525,8 @@ export default function Sidebar({
         </div>
         </details>
 
-        <details className="sidebar-section">
-          <summary><span><i className="fa-solid fa-chart-line"></i> 3. Análisis del circuito</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+        <details ref={node => registerSection('circuit-analysis', node)} className="sidebar-section" open={openSection === 'circuit-analysis'}>
+          <summary onClick={(event) => { event.preventDefault(); toggleSection('circuit-analysis'); }}><span><i className="fa-solid fa-chart-line"></i> 3. Análisis del circuito</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
           <div className="form-group" style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
             <label>Análisis automático</label>
@@ -959,8 +993,8 @@ export default function Sidebar({
         </div>
         </details>
 
-        <details className="sidebar-section" open>
-          <summary><span><i className="fa-solid fa-file-export"></i> 4. Exportar reportes</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+        <details ref={node => registerSection('report-export', node)} className="sidebar-section" open={openSection === 'report-export'}>
+          <summary onClick={(event) => { event.preventDefault(); toggleSection('report-export'); }}><span><i className="fa-solid fa-file-export"></i> 4. Exportar reportes</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block">
           <div className="card-title">
             <i className="fa-solid fa-file-export" style={{ color: '#2e7d32' }}></i> Exportar reportes

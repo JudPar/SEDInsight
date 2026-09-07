@@ -136,6 +136,7 @@ body {
   align-items: stretch;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
   gap: 8px;

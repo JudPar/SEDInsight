@@ -31,6 +31,9 @@ function parseInWorker(text) {
 }
 
 export default function ProjectPanel({
+  expanded = false,
+  onSectionToggle,
+  sectionRef,
   dataSource,
   localProjects = [],
   hasData,
@@ -313,8 +316,8 @@ export default function ProjectPanel({
 
   return (
     <>
-      <details className="sidebar-section" open>
-        <summary><span><i className="fa-solid fa-box-archive"></i> Proyectos</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
+      <details ref={sectionRef} className="sidebar-section" open={expanded}>
+        <summary onClick={(event) => { event.preventDefault(); onSectionToggle?.(); }}><span><i className="fa-solid fa-box-archive"></i> Proyectos</span><i className="fa-solid fa-chevron-down section-chevron"></i></summary>
         <div className="section-block project-actions">
           <div className="card-title"><i className="fa-solid fa-diagram-project"></i> Proyecto completo</div>
           {isLocal && <div className={`project-local-mode ${isLocalWorkspace ? 'is-editable' : ''}`}>

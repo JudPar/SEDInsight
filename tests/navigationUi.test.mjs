@@ -128,6 +128,25 @@ test('sidebar owns one stable vertical scroll area for dynamically growing analy
   assert.match(css, /\.sidebar-section\s*\{[^}]*flex:\s*0 0 auto/s);
 });
 
+test('editing sidebar behaves as a collapsed single-section accordion and follows the opened item', () => {
+  const sidebar = readFileSync(new URL('../components/Sidebar.js', import.meta.url), 'utf8');
+  const projectPanel = readFileSync(new URL('../components/ProjectPanel.js', import.meta.url), 'utf8');
+  const dataPanel = readFileSync(new URL('../components/DataManagementPanel.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8');
+
+  assert.match(sidebar, /\[openSection, setOpenSection\] = useState\(null\)/);
+  assert.match(sidebar, /setOpenSection\(current => current === sectionId \? null : sectionId\)/);
+  for (const sectionId of ['projects', 'data-management', 'temporary-data', 'navigation', 'circuit-analysis', 'report-export']) {
+    assert.match(sidebar, new RegExp(`openSection === '${sectionId}'`));
+  }
+  assert.match(projectPanel, /open=\{expanded\}/);
+  assert.match(dataPanel, /open=\{expanded\}/);
+  assert.match(sidebar, /container\.scrollTo\(\{/);
+  assert.match(sidebar, /behavior: 'smooth'/);
+  assert.match(css, /scroll-behavior:\s*smooth/);
+  assert.doesNotMatch(`${sidebar}${projectPanel}${dataPanel}`, /className="sidebar-section"\s+open>/);
+});
+
 test('map drawing rejects incomplete geometry instead of throwing during mode changes', () => {
   assert.deepEqual(getDrawableLineCoordinates(null), []);
   assert.deepEqual(getDrawableLineCoordinates([]), []);
