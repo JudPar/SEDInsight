@@ -656,7 +656,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const selectedLlavePoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,
     llaveId: currentLlaveId,
-    showFullSed: false
+    showFullSed: false,
+    knownLlaveIds: Object.keys(localDatabase[currentSedId]?.llaves || {})
   });
   const fullSedPoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,

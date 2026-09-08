@@ -86,15 +86,15 @@ test('1, 3 and 6 month presets choose the newest periods deterministically', () 
   assert.equal(selectRecentPeriods(periods, 6).length, 6);
 });
 
-test('default period selection uses the newest two months and formats the interval', () => {
-  const periods = ['2026-07', '2026-09', '2026-08'].map(periodKey => ({ periodKey }));
-  assert.deepEqual(selectRecentPeriods(periods), ['2026-09', '2026-08']);
-  assert.match(formatSelectedPeriodLabel(['2026-08', '2026-09']), /2 meses/);
+test('default economic period selection uses the newest six months and formats the interval', () => {
+  const periods = ['2026-04', '2026-01', '2026-06', '2026-03', '2026-05', '2026-02'].map(periodKey => ({ periodKey }));
+  assert.deepEqual(selectRecentPeriods(periods), ['2026-06', '2026-05', '2026-04', '2026-03', '2026-02', '2026-01']);
+  assert.match(formatSelectedPeriodLabel(periods.map(item => item.periodKey)), /6 meses/);
 });
 
-test('manual period selection survives refreshes while defaults still use the newest two months', () => {
+test('manual period selection survives refreshes while the base defaults to available months up to six', () => {
   const periods = ['2026-07', '2026-09', '2026-08'].map(periodKey => ({ periodKey }));
-  assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: false }), ['2026-09', '2026-08']);
+  assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: false }), ['2026-09', '2026-08', '2026-07']);
   assert.deepEqual(resolveActivePeriodSelection(periods, ['2026-08'], { preserveSelection: true }), ['2026-08']);
   assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: true }), []);
   assert.deepEqual(resolveActivePeriodSelection(periods, ['2026-06', '2026-07'], { preserveSelection: true }), ['2026-07']);

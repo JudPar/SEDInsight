@@ -8,6 +8,7 @@ import {
   DEFAULT_DISCOUNT_RATE,
   DEFAULT_ESCALATION_RATE,
   DEFAULT_HORIZON_YEARS,
+  ECONOMIC_SENSITIVITY_SCENARIOS,
   createEconomicSimulationSnapshot,
   simulateEconomicAnalysis
 } from '@/lib/economicSimulation';
@@ -59,6 +60,14 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
     escalationRate: numericInput(escalationPercent) === null ? null : numericInput(escalationPercent) / 100
   }), [aerialCost, undergroundCost, unclassifiedCost, compensationMode, manualCompensation, avoidablePercent, discountPercent, horizonYears, escalationPercent]);
   const simulation = useMemo(() => simulateEconomicAnalysis(input, assumptions), [input, assumptions]);
+  const sensitivityResults = useMemo(() => ECONOMIC_SENSITIVITY_SCENARIOS.map(scenario => ({
+    ...scenario,
+    result: simulateEconomicAnalysis(input, {
+      ...assumptions,
+      horizonYears: scenario.horizonYears,
+      avoidableFaultFactor: scenario.avoidableFaultFactor
+    })
+  })), [input, assumptions]);
   useEffect(() => {
     onReportEconomicChange?.(input ? { input, simulation, note } : null);
   }, [input, simulation, note, onReportEconomicChange]);
@@ -112,7 +121,8 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
           <label>Costo aéreo/km<input className="input-control" type="number" min="0" value={aerialCost} onChange={event => setAerialCost(event.target.value)} placeholder="Ingresar S/ por km" /></label>
           <label>Costo subterráneo/km<input className="input-control" type="number" min="0" value={undergroundCost} onChange={event => setUndergroundCost(event.target.value)} placeholder="Ingresar S/ por km" /></label>
           {input.geometry.unclassifiedLengthMeters > 0 && <label>Costo manual para longitud sin clasificar/km<input className="input-control" type="number" min="0" value={unclassifiedCost} onChange={event => setUnclassifiedCost(event.target.value)} placeholder="Ingresar S/ por km" /></label>}
-          <label>Compensación promedio por falla
+          <div>Compensación observada del ámbito: <b>{formatCurrency(simulation.compensationPerFault.observedCompensation)}</b></div>
+          <label>Compensación estimada por falla
             <input className="input-control" type="number" min="0" value={compensationDisplay} onChange={event => { setCompensationMode('manual'); setManualCompensation(event.target.value); }} placeholder="Ingresar supuesto manual" />
           </label>
           <div style={{ color: 'var(--text-muted)' }}>
@@ -126,10 +136,10 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
           </div>
           {compensationMode === 'manual' && automaticAvailable && <button className="btn btn-outline" type="button" onClick={() => { setCompensationMode('automatic'); setManualCompensation(''); }}>Restaurar valor calculado</button>}
           <label>Factor de fallas evitables (%)<input className="input-control" type="number" min="0" max="100" value={avoidablePercent} onChange={event => setAvoidablePercent(event.target.value)} /></label>
-          <div style={{ display: 'flex', gap: '4px' }}>{[70, 90, 100].map(value => <button key={value} className="btn btn-outline" type="button" onClick={() => setAvoidablePercent(String(value))}>{value}%</button>)}</div>
+          <div style={{ display: 'flex', gap: '4px' }}>{[40, 60, 80].map(value => <button key={value} className="btn btn-outline" type="button" onClick={() => setAvoidablePercent(String(value))}>{value}%</button>)}</div>
           <label>Tasa de descuento real (%)<input className="input-control" type="number" min="0" step="0.1" value={discountPercent} onChange={event => setDiscountPercent(event.target.value)} /></label>
           <label>Horizonte (años)<input className="input-control" type="number" min="1" step="1" value={horizonYears} onChange={event => setHorizonYears(event.target.value)} /></label>
-          <label>Inflación/escalamiento (%)<input className="input-control" type="number" step="0.1" value={escalationPercent} onChange={event => setEscalationPercent(event.target.value)} /></label>
+          <label>Escalamiento real (%)<input className="input-control" type="number" step="0.1" value={escalationPercent} onChange={event => setEscalationPercent(event.target.value)} /></label>
         </div>
       </details>
 
@@ -140,8 +150,8 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
           <div style={{ color: 'var(--text-muted)' }}>Aérea: {formatNumber(cost.components.aerial.lengthMeters)} m × {formatCurrency(cost.components.aerial.costPerKm)}/km = {formatCurrency(cost.components.aerial.cost)}</div>
           <div style={{ color: 'var(--text-muted)' }}>Subterránea: {formatNumber(cost.components.underground.lengthMeters)} m × {formatCurrency(cost.components.underground.costPerKm)}/km = {formatCurrency(cost.components.underground.cost)}</div>
           {cost.components.unclassified.lengthMeters > 0 && <div style={{ color: 'var(--text-muted)' }}>Sin clasificar: {formatNumber(cost.components.unclassified.lengthMeters)} m × {formatCurrency(cost.components.unclassified.costPerKm)}/km = {formatCurrency(cost.components.unclassified.cost)}</div>}
-          <div>Compensación promedio/falla: <b>{formatCurrency(simulation.compensationPerFault.value)}</b></div>
-          <div>Exposición anual estimada: <b>{formatCurrency(simulation.annualCompensationExposure)}</b></div>
+          <div>Compensación estimada por falla: <b>{formatCurrency(simulation.compensationPerFault.value)}</b></div>
+          <div>{simulation.compensationPerFault.attribution === 'estimated_proportional' ? 'Impacto económico atribuible estimado' : 'Exposición anual estimada'}: <b>{formatCurrency(simulation.annualCompensationExposure)}</b></div>
           <div>Ahorro anual estimado por compensaciones evitables: <b>{formatCurrency(simulation.annualAvoidedBenefit)}</b></div>
           <div>VAN preliminar: <b>{formatCurrency(financial.npv)}</b>{Number.isFinite(financial.npv) ? ` · ${financial.npv > 0 ? 'positivo' : financial.npv < 0 ? 'negativo' : 'igual a cero'}` : ''}</div>
           <div>TIR preliminar: <b>{formatPercent(financial.irr)}</b>{Number.isFinite(financial.irr) && Number.isFinite(simulation.inputsUsed.assumptions.discountRate) ? ` · ${financial.irr >= simulation.inputsUsed.assumptions.discountRate ? 'por encima' : 'por debajo'} de la tasa` : ''}</div>
@@ -155,6 +165,15 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
           <div style={{ marginTop: '3px' }}>Probabilidad estimada de al menos una nueva falla:</div>
           <div style={{ display: 'flex', gap: '4px' }}>{[2, 6, 12].map(months => <button key={months} className="btn btn-outline" type="button" onClick={() => setPoissonMonths(months)}>{months} meses</button>)}</div>
           <div><b>{selectedPoisson ? formatPercent(selectedPoisson.probabilityAtLeastOne) : 'No disponible'}</b>{selectedPoisson ? ` · E[N] ${formatNumber(selectedPoisson.expectedFaults, 3)}` : ''}</div>
+        </div>
+      </details>
+
+      <details open style={{ marginTop: '6px' }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Sensibilidad económica</summary>
+        <div style={{ marginTop: '4px', display: 'grid', gap: '3px' }}>
+          {sensitivityResults.map(({ id, label, horizonYears: years, avoidableFaultFactor: factor, result }) => <div key={id}>
+            <b>{label}</b> · {years} años / {factor * 100}% · VAN {formatCurrency(result.financial.npv)} · B/C {formatNumber(result.financial.benefitCostRatio, 2)}
+          </div>)}
         </div>
       </details>
 

@@ -7,6 +7,9 @@ import { validateProject } from '../lib/projectValidation.js';
 import {
   COSTO_AEREO_DEFAULT,
   COSTO_SUBTERRANEO_DEFAULT,
+  DEFAULT_AVOIDABLE_FAULT_FACTOR,
+  DEFAULT_HORIZON_YEARS,
+  ECONOMIC_SENSITIVITY_SCENARIOS,
   calculateFaultRate,
   calculateFinancialIndicators,
   calculateIrr,
@@ -35,6 +38,21 @@ function technicalInput(overrides = {}) {
 test('configured intervention cost defaults use soles per kilometer', () => {
   assert.equal(COSTO_AEREO_DEFAULT, 70000);
   assert.equal(COSTO_SUBTERRANEO_DEFAULT, 540000);
+  assert.equal(DEFAULT_HORIZON_YEARS, 3);
+  assert.equal(DEFAULT_AVOIDABLE_FAULT_FACTOR, 0.6);
+  assert.deepEqual(ECONOMIC_SENSITIVITY_SCENARIOS.map(item => [item.horizonYears, item.avoidableFaultFactor]), [[2, 0.4], [3, 0.6], [5, 0.8]]);
+});
+
+test('economic screening distinguishes observed compensation from proportional attribution and warns on weak samples', () => {
+  const result = simulateEconomicAnalysis(technicalInput({
+    period: { selectedPeriodKeys: ['2026-01', '2026-02'], exposureDays: 59, exposureYears: 59 / 365.2425 },
+    faults: { count: 2, indexes: [0, 1], ids: ['1', '2'] },
+    compensation: { automatic: { compensationPerFault: 5000, totalKnown: 10000, faultsCompatible: 2, compatiblePeriodKeys: ['2026-01', '2026-02'], coverageStatus: 'complete', sourceScope: 'circuit' } }
+  }), { aerialCostPerKm: 70000, undergroundCostPerKm: 540000 });
+  assert.equal(result.compensationPerFault.observedCompensation, 10000);
+  assert.equal(result.compensationPerFault.attribution, 'estimated_proportional');
+  assert.deepEqual(result.warnings.map(item => item.code).filter(code => ['SHORT_HISTORY_WINDOW', 'SMALL_FAULT_SAMPLE', 'SMALL_COMPENSATION_DENOMINATOR'].includes(code)).sort(),
+    ['SHORT_HISTORY_WINDOW', 'SMALL_COMPENSATION_DENOMINATOR', 'SMALL_FAULT_SAMPLE']);
 });
 
 test('lambda and Poisson use the technical exposure only', () => {
@@ -224,7 +242,9 @@ test('UI exposes screening controls without automatic renewal language', () => {
   assert.match(panel, /TIR preliminar/);
   assert.match(panel, /Restaurar valor calculado/);
   assert.match(panel, /Actualizando datos econ.micos del periodo/);
-  assert.match(panel, /70, 90, 100/);
+  assert.match(panel, /40, 60, 80/);
+  assert.match(panel, /Impacto económico atribuible estimado/);
+  assert.match(panel, /Sensibilidad económica/);
   assert.match(sidebar, /showEconomicAnalysis && selectedAnalysisSegment/);
   assert.doesNotMatch(panel, /PROYECTO APROBADO|PRIORIDAD #1|RENOVAR ESTE TRAMO/i);
   assert.match(page, /economicSimulations:/);

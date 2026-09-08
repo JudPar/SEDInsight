@@ -35,6 +35,18 @@ test('normal view keeps the existing SED and llave filter', () => {
   assert.deepEqual(visible.map(point => point.id), [1]);
 });
 
+test('SP and S circuit aliases match only when the permanent circuit identity is unique', () => {
+  const points = [{ id: 10, sed: '00007S', llaveSistema: '10SP', sedLlave: '00007S-10SP' }];
+  const unique = filterFaultsForCircuitView(points, {
+    sedId: '00007S', llaveId: 'T-03/00007S/10S', knownLlaveIds: ['T-03/00007S/10S'], showFullSed: false
+  });
+  const ambiguous = filterFaultsForCircuitView(points, {
+    sedId: '00007S', llaveId: 'T-03/00007S/10S', knownLlaveIds: ['T-03/00007S/10S', 'T-04/00007S/10SP'], showFullSed: false
+  });
+  assert.deepEqual(unique.map(point => point.id), [10]);
+  assert.deepEqual(ambiguous, []);
+});
+
 test('full SED view includes every llave plus SED-only faults exactly once', () => {
   const visible = filterFaultsForCircuitView(faults, { sedId: '00338S', llaveId: 'L1', showFullSed: true });
   assert.deepEqual(visible.map(point => point.id), [1, 2, 3]);
