@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildAnalysisPeriod } from '../lib/faultPeriods.js';
 import { prepareMonthlyFaultImport, readCallCountFromRow } from '../lib/monthlyFaultImport.js';
-import { compensationPeriodMonths, formatCompensationPeriodRange, mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
+import { compensationPeriodMonths, createPermanentCircuitResolver, formatCompensationPeriodRange, mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics } from '../lib/sedMetrics.js';
 import { canonicalCircuitKey, normalizeLlaveCode, normalizeSedId } from '../lib/sedUtils.js';
 import { analyzeCircuit, resolveLineMounting } from '../lib/circuitAnalysis.js';
@@ -140,6 +140,37 @@ test('circuit compensation accepts one real bimonthly row and formats its range'
   assert.deepEqual(preview.rows, [{ sed_id: '00007S', llave_code: '10S', period_key: '2026-01', period_end_key: '2026-02', compensation: 18500 }]);
   assert.deepEqual(compensationPeriodMonths('2026-01', '2026-02'), ['2026-01', '2026-02']);
   assert.equal(formatCompensationPeriodRange('2026-01', '2026-02'), 'Ene–Feb 2026');
+});
+
+test('circuit compensation safely resolves abbreviated circuit identifiers to their permanent keys', () => {
+  const circuits = [
+    { sedId: '00007S', llaveCode: 'T-03/00007S/1SP' },
+    { sedId: '00007S', llaveCode: 'T-03/00007S/10S' },
+    { sedId: '00007S', llaveCode: 'T-03/00007S/1AP' }
+  ];
+  const preview = prepareMonthlyCircuitCompensationImport([
+    { sed_id: '00007S', llave_code: '01SP', period_start_key: '2026-01', period_end_key: '2026-02', compensation: 100 },
+    { sed_id: '00007S', llave_code: '10SP', period_start_key: '2026-01', period_end_key: '2026-02', compensation: 200 },
+    { sed_id: '00007S', llave_code: '1AP', period_start_key: '2026-01', period_end_key: '2026-02', compensation: 300 }
+  ], circuits);
+  assert.equal(preview.aliasesResolved, 3);
+  assert.equal(preview.ambiguous, 0);
+  assert.deepEqual(preview.rows.map(row => row.llave_code), ['T-03/00007S/1SP', 'T-03/00007S/10S', 'T-03/00007S/1AP']);
+});
+
+test('circuit compensation never chooses an abbreviated circuit alias ambiguously', () => {
+  const resolve = createPermanentCircuitResolver([
+    { sedId: '00007S', llaveCode: 'T-03/00007S/10SP' },
+    { sedId: '00007S', llaveCode: 'T-04/00007S/10SP' }
+  ]);
+  assert.equal(resolve('00007S', '010SP').status, 'ambiguous');
+  const preview = prepareMonthlyCircuitCompensationImport([
+    { sed_id: '00007S', llave_code: '010SP', period_start_key: '2026-01', period_end_key: '2026-02', compensation: 100 }
+  ], [
+    { sedId: '00007S', llaveCode: 'T-03/00007S/10SP' },
+    { sedId: '00007S', llaveCode: 'T-04/00007S/10SP' }
+  ]);
+  assert.deepEqual([preview.accepted, preview.ambiguous, preview.valid], [0, 1, false]);
 });
 
 test('circuit compensation handles several keys and months without duplicates or destructive partial replacement', () => {
