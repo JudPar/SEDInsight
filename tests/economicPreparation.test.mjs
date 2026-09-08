@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildAnalysisPeriod } from '../lib/faultPeriods.js';
 import { prepareMonthlyFaultImport, readCallCountFromRow } from '../lib/monthlyFaultImport.js';
-import { compensationPeriodMonths, createPermanentCircuitResolver, formatCompensationPeriodRange, mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
+import { compensationPeriodMonths, createPermanentCircuitResolver, detectCompensationImportKind, formatCompensationPeriodRange, mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics } from '../lib/sedMetrics.js';
 import { canonicalCircuitKey, normalizeLlaveCode, normalizeSedId } from '../lib/sedUtils.js';
 import { analyzeCircuit, resolveLineMounting } from '../lib/circuitAnalysis.js';
@@ -140,6 +140,16 @@ test('circuit compensation accepts one real bimonthly row and formats its range'
   assert.deepEqual(preview.rows, [{ sed_id: '00007S', llave_code: '10S', period_key: '2026-01', period_end_key: '2026-02', compensation: 18500 }]);
   assert.deepEqual(compensationPeriodMonths('2026-01', '2026-02'), ['2026-01', '2026-02']);
   assert.equal(formatCompensationPeriodRange('2026-01', '2026-02'), 'Ene–Feb 2026');
+});
+
+test('compensation input automatically distinguishes SED totals from SED-circuit ranges', () => {
+  assert.equal(detectCompensationImportKind([
+    { sed_id: '00007S', period_key: '2026-01', compensation: 100 }
+  ]), 'sed');
+  assert.equal(detectCompensationImportKind([
+    { sed_id: '00007S', llave_code: '10SP', period_start_key: '2026-01', period_end_key: '2026-02', compensation: 100 }
+  ]), 'circuit');
+  assert.equal(detectCompensationImportKind([]), 'unknown');
 });
 
 test('circuit compensation safely resolves abbreviated circuit identifiers to their permanent keys', () => {

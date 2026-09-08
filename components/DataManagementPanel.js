@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { formatPeriodLabel, isMonthlyPeriodKey, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
 import { prepareMonthlyFaultImport } from '@/lib/monthlyFaultImport';
-import { prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '@/lib/monthlyCompensationImport';
+import { detectCompensationImportKind, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '@/lib/monthlyCompensationImport';
 import { sortSedPeriodMetrics, summarizeCompensationPeriods } from '@/lib/sedMetrics';
 import { parseProjectJson } from '@/lib/projectFormat';
 import { createWorkProjectConfig, validateWorkProjectConfig } from '@/lib/workProjectConfig';
@@ -60,6 +60,7 @@ export default function DataManagementPanel({
   const [compensationText, setCompensationText] = useState('');
   const [compensationPreview, setCompensationPreview] = useState(null);
   const [compensationError, setCompensationError] = useState('');
+  const [compensationNotice, setCompensationNotice] = useState('');
   const [compensationBusy, setCompensationBusy] = useState(false);
   const [circuitCompensationText, setCircuitCompensationText] = useState('');
   const [circuitCompensationPreview, setCircuitCompensationPreview] = useState(null);
@@ -153,8 +154,20 @@ export default function DataManagementPanel({
 
   function previewCompensation() {
     setCompensationError('');
+    setCompensationNotice('');
     try {
       const parsed = parseProjectJson(compensationText);
+      if (detectCompensationImportKind(parsed) === 'circuit') {
+        const circuitPreview = prepareMonthlyCircuitCompensationImport(parsed, permanentCircuits, circuitCompensationRows);
+        setCompensationPreview(null);
+        setCircuitCompensationText(compensationText);
+        setCircuitCompensationPreview(circuitPreview);
+        setCircuitCompensationError(circuitPreview.valid ? '' : 'No hay filas válidas con SED, llave, inicio, fin y compensación (mensual o bimestral).');
+        setCompensationNotice(circuitPreview.valid
+          ? `Formato SED–llave detectado: ${circuitPreview.accepted} filas listas en la sección siguiente.`
+          : 'Formato SED–llave detectado, pero ninguna fila coincide de forma válida con la Base Principal.');
+        return;
+      }
       const preview = prepareMonthlyCompensationImport(parsed, Object.keys(seds || {}), compensationRows);
       setCompensationPreview(preview);
       if (!preview.valid) setCompensationError('No hay filas válidas con SED, periodo YYYY-MM y compensación.');
@@ -292,11 +305,12 @@ export default function DataManagementPanel({
       {monthlyError && <div className="project-validation-errors"><p>{monthlyError}</p></div>}
 
       <div className="card-title"><i className="fa-solid fa-coins"></i> Compensación mensual por SED (referencia)</div>
-      <textarea className="input-control monthly-json-input" value={compensationText} onChange={event => { setCompensationText(event.target.value); setCompensationPreview(null); }} placeholder='Pega JSON con SED, period_key y compensación' />
+      <textarea className="input-control monthly-json-input" value={compensationText} onChange={event => { setCompensationText(event.target.value); setCompensationPreview(null); setCompensationNotice(''); }} placeholder='Pega JSON con SED y periodo; si incluye llave se detectará automáticamente' />
       <button className="btn btn-cyan" onClick={previewCompensation} disabled={!compensationText.trim() || compensationBusy}>Validar compensación</button>
       {compensationPreview && <div className="monthly-preview"><b>{compensationPreview.periodCount} periodo(s) · {compensationPreview.accepted} SED/periodo</b><span>Total: S/ {compensationPreview.totalCompensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}</span><span>Fuera del universo: {compensationPreview.outsideUniverse}</span><span>Duplicados: {compensationPreview.duplicates}</span><span>Inválidos: {compensationPreview.invalid}</span>{compensationPreview.periods.map(period => <div key={period.periodKey}><strong>{period.periodLabel}{period.existingConflicts ? ` · ${period.existingConflicts} existentes` : ''}</strong><span> · {period.accepted} SED · S/ {period.totalCompensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}</span></div>)}<button className="btn btn-green" onClick={confirmCompensationImport} disabled={!compensationPreview.valid || !periodSupport || compensationBusy}>Guardar compensación</button></div>}
       {compensationPeriods.length > 0 && <div className="work-project-list">{compensationPeriods.map(period => <div key={period.periodKey}><div><b>{formatPeriodLabel(period.periodKey)}</b><span>{period.sedCount} SED · S/ {period.totalCompensation.toLocaleString('es-PE', { maximumFractionDigits: 2 })}</span></div><button onClick={() => removeCompensationPeriod(period)} disabled={compensationBusy} title="Eliminar solo compensación"><i className="fa-solid fa-trash-can"></i></button></div>)}</div>}
       {compensationError && <div className="project-validation-errors"><p>{compensationError}</p></div>}
+      {compensationNotice && <p className="project-help"><b>{compensationNotice}</b></p>}
 
       <div className="card-title"><i className="fa-solid fa-plug-circle-bolt"></i> Compensación mensual/bimestral por SED–llave</div>
       <p className="project-help">Compensación de llave: tiene prioridad en el análisis económico. Si falta, se usa la compensación SED como referencia, sin repartirla.</p>
