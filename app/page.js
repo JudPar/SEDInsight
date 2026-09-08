@@ -314,7 +314,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         supabase.from('fault_periods').select('period_key, label, start_date, end_date, row_count, created_at').order('period_key', { ascending: false }),
         supabase.from('geopluz_work_projects').select('id, owner_id, name, description, sed_ids, period_keys, created_at, updated_at').order('updated_at', { ascending: false }),
         supabase.from('sed_monthly_metrics').select('sed_id, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false }),
-        supabase.from('circuit_monthly_metrics').select('sed_id, llave_code, period_key, compensation, created_at, updated_at').order('period_key', { ascending: false })
+        supabase.from('circuit_monthly_metrics').select('*').order('period_key', { ascending: false })
       ]);
       
       if (!sedsError && sedsData) {
@@ -378,6 +378,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             sedId: row.sed_id,
             llaveCode: row.llave_code,
             periodKey: row.period_key,
+            periodEndKey: row.period_end_key || row.period_key,
             compensation: Number(row.compensation),
             createdAt: row.created_at,
             updatedAt: row.updated_at
@@ -2114,8 +2115,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function handleImportCircuitCompensation(preview, { replace = false } = {}) {
     if (!isSupabaseSource || !periodSupport || !circuitCompensationSupport || !supabase) throw new Error('La compensación por llave requiere Base Principal y la migración aplicada.');
     await requireLifecycleSession();
-    const { data, error } = await supabase.rpc('geopluz_import_circuit_compensation_period', {
-      p_period_key: preview.periodKey,
+    const { data, error } = await supabase.rpc('geopluz_import_circuit_compensation_range', {
+      p_period_start_key: preview.periodKey,
+      p_period_end_key: preview.periodEndKey || preview.periodKey,
       p_rows: preview.rows,
       p_replace: Boolean(replace)
     });
@@ -2127,8 +2129,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function handleDeleteCircuitCompensationPeriod(period) {
     if (!isSupabaseSource || !circuitCompensationSupport || !supabase) throw new Error('La compensación por llave no puede eliminarse desde el modo actual.');
     await requireLifecycleSession();
-    const { data, error } = await supabase.rpc('geopluz_delete_circuit_compensation_period', {
-      p_period_key: period.periodKey,
+    const { data, error } = await supabase.rpc('geopluz_delete_circuit_compensation_range', {
+      p_period_start_key: period.periodKey,
+      p_period_end_key: period.periodEndKey || period.periodKey,
       p_expected_rows: period.circuitCount
     });
     if (error) throw error;

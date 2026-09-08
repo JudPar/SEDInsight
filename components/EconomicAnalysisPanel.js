@@ -116,9 +116,9 @@ export default function EconomicAnalysisPanel({ input, canSave = false, storedSi
             <input className="input-control" type="number" min="0" value={compensationDisplay} onChange={event => { setCompensationMode('manual'); setManualCompensation(event.target.value); }} placeholder="Ingresar supuesto manual" />
           </label>
           <div style={{ color: 'var(--text-muted)' }}>
-            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'circuit' && `Calculada automáticamente con ${simulation.compensationPerFault.faultsCompatible} fallas del circuito.`}
-            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'sed' && `Calculada automáticamente: compensación total de la SED dividida entre ${simulation.compensationPerFault.faultsCompatible} fallas de los mismos periodos.`}
-            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'mixed' && `Calculada por periodo: compensación de llave cuando existe y compensación SED como referencia únicamente en los meses faltantes (${simulation.compensationPerFault.faultsCompatible} fallas compatibles).`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'circuit' && `Compensación de llave · dividida entre ${simulation.compensationPerFault.faultsCompatible} fallas de la misma llave y los mismos periodos.`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'sed' && `Compensación SED (referencia) · dividida entre ${simulation.compensationPerFault.faultsCompatible} fallas de la misma SED y los mismos periodos.`}
+            {simulation.compensationPerFault.source === 'automatic' && simulation.compensationPerFault.sourceScope === 'mixed' && `Compensación de llave donde existe; Compensación SED (referencia) solo para periodos sin dato de llave · ${simulation.compensationPerFault.faultsCompatible} fallas de los ámbitos correspondientes.`}
             {simulation.compensationPerFault.source === 'manual' && 'Valor ingresado manualmente para esta simulación.'}
             {simulation.compensationPerFault.source === 'manual_override' && 'Override manual del valor calculado.'}
             {simulation.compensationPerFault.source === 'unavailable' && 'Sin dato automático compatible; puede ingresar un supuesto manual.'}

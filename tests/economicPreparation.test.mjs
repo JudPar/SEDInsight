@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildAnalysisPeriod } from '../lib/faultPeriods.js';
 import { prepareMonthlyFaultImport, readCallCountFromRow } from '../lib/monthlyFaultImport.js';
-import { mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
+import { compensationPeriodMonths, formatCompensationPeriodRange, mergeCircuitCompensationPeriodRows, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics } from '../lib/sedMetrics.js';
 import { canonicalCircuitKey, normalizeLlaveCode, normalizeSedId } from '../lib/sedUtils.js';
 import { analyzeCircuit, resolveLineMounting } from '../lib/circuitAnalysis.js';
@@ -127,9 +127,19 @@ test('future circuit compensation parser is monthly, canonical and does not dist
   assert.equal(preview.accepted, 2);
   assert.equal(preview.invalid, 1);
   assert.deepEqual(preview.rows, [
-    { sed_id: '00338S', llave_code: 'A', period_key: '2026-08', compensation: 0 },
-    { sed_id: '00338S', llave_code: 'B', period_key: '2026-08', compensation: 25 }
+    { sed_id: '00338S', llave_code: 'A', period_key: '2026-08', period_end_key: '2026-08', compensation: 0 },
+    { sed_id: '00338S', llave_code: 'B', period_key: '2026-08', period_end_key: '2026-08', compensation: 25 }
   ]);
+});
+
+test('circuit compensation accepts one real bimonthly row and formats its range', () => {
+  const preview = prepareMonthlyCircuitCompensationImport([
+    { SED: '00007S', llave: '10S', inicio: '2026-01', fin: '2026-02', monto: '18,500' }
+  ], [{ sedId: '00007S', llaveCode: '10S' }]);
+  assert.equal(preview.valid, true);
+  assert.deepEqual(preview.rows, [{ sed_id: '00007S', llave_code: '10S', period_key: '2026-01', period_end_key: '2026-02', compensation: 18500 }]);
+  assert.deepEqual(compensationPeriodMonths('2026-01', '2026-02'), ['2026-01', '2026-02']);
+  assert.equal(formatCompensationPeriodRange('2026-01', '2026-02'), 'Ene–Feb 2026');
 });
 
 test('circuit compensation handles several keys and months without duplicates or destructive partial replacement', () => {
@@ -149,7 +159,7 @@ test('circuit compensation handles several keys and months without duplicates or
   assert.deepEqual([august.periodExists, august.existingPeriodRows, august.existingConflicts], [true, 2, 1]);
   const merged = mergeCircuitCompensationPeriodRows(august.rows, existing, august.periodKey);
   assert.deepEqual(merged.map(row => [row.llave_code, row.compensation]), [['A', 30], ['B', 20], ['C', 40]]);
-  assert.deepEqual(summarizeCircuitCompensationPeriods(merged), [{ periodKey: '2026-08', circuitCount: 3, sedCount: 1, totalCompensation: 90 }]);
+  assert.deepEqual(summarizeCircuitCompensationPeriods(merged), [{ periodKey: '2026-08', periodEndKey: '2026-08', periodLabel: 'Agosto de 2026', circuitCount: 3, sedCount: 1, totalCompensation: 90 }]);
 });
 
 test('circuit compensation migration remains local, period-scoped and authenticated', () => {
@@ -158,6 +168,16 @@ test('circuit compensation migration remains local, period-scoped and authentica
   assert.match(sql, /foreign key \(sed_id, llave_code\) references public\.llaves\(sed_id, llave_code\)/);
   assert.match(sql, /delete from public\.circuit_monthly_metrics where period_key = p_period_key/);
   assert.match(sql, /auth\.uid\(\)/);
+  assert.doesNotMatch(sql, /(insert into|update|delete from|truncate) public\.suministros_coordenadas/i);
+  assert.doesNotMatch(sql, /grant execute[\s\S]*to anon/i);
+});
+
+test('bimonthly migration stores one range row and retains authenticated RPC access', () => {
+  const sql = readFileSync(new URL('../supabase/migrations/20260908090000_bimonthly_circuit_compensation.sql', import.meta.url), 'utf8');
+  assert.match(sql, /add column if not exists period_end_key text/);
+  assert.match(sql, /one or two consecutive months/);
+  assert.match(sql, /geopluz_import_circuit_compensation_range/);
+  assert.match(sql, /insert into public\.circuit_monthly_metrics\(sed_id, llave_code, period_key, period_end_key, compensation, created_by\)/);
   assert.doesNotMatch(sql, /(insert into|update|delete from|truncate) public\.suministros_coordenadas/i);
   assert.doesNotMatch(sql, /grant execute[\s\S]*to anon/i);
 });
@@ -359,15 +379,21 @@ test('circuit compensation has priority over SED reference and another key never
       { sedId: '00338S', llaveCode: 'B', periodKey: '2026-08', compensation: 900 }
     ],
     sedMetricReconciliation: {
-      faultCountByPeriod: [{ periodKey: '2026-07', count: 1 }, { periodKey: '2026-08', count: 1 }],
+      faultCountByPeriod: [{ periodKey: '2026-07', count: 10 }, { periodKey: '2026-08', count: 20 }],
       compensation: { dataAvailable: true, dataComplete: true, byPeriod: [{ periodKey: '2026-07', value: 100, available: true }, { periodKey: '2026-08', value: 200, available: true }], periodsMissing: [] }
     }
   };
   const keyA = buildEconomicAnalysisInput({ ...base, llaveCode: 'A' });
   const keyC = buildEconomicAnalysisInput({ ...base, llaveCode: 'C' });
   assert.deepEqual([keyA.compensation.scope, keyA.compensation.automatic.totalKnown, keyA.compensation.automatic.compensationPerFault], ['circuit', 80, 40]);
-  assert.deepEqual([keyC.compensation.scope, keyC.compensation.automatic.totalKnown, keyC.compensation.automatic.compensationPerFault], ['sed', 300, 150]);
+  assert.deepEqual([keyA.compensation.automatic.faultsCompatible, keyC.compensation.scope, keyC.compensation.automatic.totalKnown, keyC.compensation.automatic.faultsCompatible, keyC.compensation.automatic.compensationPerFault], [2, 'sed', 300, 30, 10]);
   assert.equal(keyA.compensation.allocatedToAnalysisUnit, false);
+});
+
+test('economic panel identifies circuit compensation and SED reference explicitly', () => {
+  const panel = readFileSync(new URL('../components/EconomicAnalysisPanel.js', import.meta.url), 'utf8');
+  assert.match(panel, /Compensación de llave/);
+  assert.match(panel, /Compensación SED \(referencia\)/);
 });
 
 test('monthly priority combines key data with SED fallback only for missing key months', () => {
@@ -387,6 +413,40 @@ test('monthly priority combines key data with SED fallback only for missing key 
     ['2026-08', 80, 'sed', 4]
   ]);
   assert.deepEqual([input.compensation.automatic.totalKnown, input.compensation.automatic.faultsCompatible, input.compensation.automatic.compensationPerFault], [110, 5, 22]);
+});
+
+test('bimonthly circuit compensation is counted once and uses faults from both selected months', () => {
+  const input = buildEconomicAnalysisInput({
+    sedId: '00007S', llaveCode: '10S', analysisUnit: { analysisSegmentId: 'unit', faultIndexes: [0, 1, 2] },
+    selectedPeriodKeys: ['2026-01', '2026-02'],
+    faults: [{ periodKey: '2026-01' }, { periodKey: '2026-02' }, { periodKey: '2026-02' }],
+    circuitCompensationRows: [{ sedId: '00007S', llaveCode: '10S', periodKey: '2026-01', periodEndKey: '2026-02', compensation: 18500 }],
+    sedMetricReconciliation: {
+      faultCountByPeriod: [{ periodKey: '2026-01', count: 10 }, { periodKey: '2026-02', count: 20 }],
+      compensation: { dataAvailable: true, dataComplete: true, byPeriod: [{ periodKey: '2026-01', value: 9000, available: true }, { periodKey: '2026-02', value: 11000, available: true }] }
+    }
+  });
+  assert.deepEqual([input.compensation.scope, input.compensation.automatic.totalKnown, input.compensation.automatic.faultsCompatible], ['circuit', 18500, 3]);
+  assert.equal(input.compensation.automatic.byPeriod.length, 1);
+});
+
+test('several bimesters sum once each and an incomplete selected range falls back to SED', () => {
+  const base = {
+    sedId: '00007S', llaveCode: '10S', analysisUnit: { analysisSegmentId: 'unit', faultIndexes: [0, 1, 2, 3] },
+    faults: [{ periodKey: '2026-01' }, { periodKey: '2026-02' }, { periodKey: '2026-03' }, { periodKey: '2026-04' }],
+    circuitCompensationRows: [
+      { sedId: '00007S', llaveCode: '10S', periodKey: '2026-01', periodEndKey: '2026-02', compensation: 100 },
+      { sedId: '00007S', llaveCode: '10S', periodKey: '2026-03', periodEndKey: '2026-04', compensation: 200 }
+    ],
+    sedMetricReconciliation: {
+      faultCountByPeriod: ['2026-01', '2026-02', '2026-03', '2026-04'].map(periodKey => ({ periodKey, count: 5 })),
+      compensation: { dataAvailable: true, dataComplete: true, byPeriod: ['2026-01', '2026-02', '2026-03', '2026-04'].map((periodKey, index) => ({ periodKey, value: 10 + index, available: true })) }
+    }
+  };
+  const all = buildEconomicAnalysisInput({ ...base, selectedPeriodKeys: ['2026-01', '2026-02', '2026-03', '2026-04'] });
+  const januaryOnly = buildEconomicAnalysisInput({ ...base, selectedPeriodKeys: ['2026-01'] });
+  assert.deepEqual([all.compensation.scope, all.compensation.automatic.totalKnown, all.compensation.automatic.faultsCompatible, all.compensation.automatic.byPeriod.length], ['circuit', 300, 4, 2]);
+  assert.deepEqual([januaryOnly.compensation.scope, januaryOnly.compensation.automatic.totalKnown, januaryOnly.compensation.automatic.faultsCompatible], ['sed', 10, 5]);
 });
 
 test('an existing key compensation with no compatible circuit faults does not silently fall back to SED', () => {
