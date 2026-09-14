@@ -100,6 +100,7 @@ export default function Sidebar({
   onCloseLocalProject,
   faultPeriods,
   selectedPeriodKeys,
+  periodFilteringEnabled,
   onChangeSelectedPeriods,
   sedFaultRanking,
   periodSupport,
@@ -321,6 +322,7 @@ export default function Sidebar({
           faultPoints={faultPoints}
           periods={faultPeriods}
           selectedPeriodKeys={selectedPeriodKeys}
+          periodFilteringEnabled={periodFilteringEnabled}
           onChangeSelectedPeriods={onChangeSelectedPeriods}
           ranking={sedFaultRanking}
           onSelectSed={setCurrentSedId}

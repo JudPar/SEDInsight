@@ -173,6 +173,19 @@ test('editable local workspace is exposed without enabling Supabase write paths'
   assert.match(panelSource, /!isLocalWorkspace && <button[\s\S]*?Reemplazar Base Principal/);
 });
 
+test('local projects ignore the Base Principal period filter', () => {
+  const pageSource = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const sidebarSource = readFileSync(new URL('../components/Sidebar.js', import.meta.url), 'utf8');
+  const dataPanelSource = readFileSync(new URL('../components/DataManagementPanel.js', import.meta.url), 'utf8');
+  assert.match(pageSource, /const activePeriodKeys = isSupabaseSource[\s\S]*?summarizePeriods\(numberedPointsList\)/);
+  assert.match(pageSource, /isSupabaseSource \? filterFaultsByPeriods\(numberedPointsList, activePeriodKeys\) : numberedPointsList/);
+  assert.doesNotMatch(pageSource, /const localSelection = resolveActivePeriodSelection/);
+  assert.match(pageSource, /periodFilteringEnabled=\{isSupabaseSource\}/);
+  assert.match(sidebarSource, /periodFilteringEnabled=\{periodFilteringEnabled\}/);
+  assert.match(dataPanelSource, /Proyecto local:[\s\S]*?el filtro de la Base Principal no se aplica/);
+  assert.match(dataPanelSource, /disabled=\{!periodFilteringEnabled\}/);
+});
+
 test('temporary import workspace is a valid canonical local project', async () => {
   const { database, faults } = fixture();
   const temporary = await createProjectDocument(database, faults, {

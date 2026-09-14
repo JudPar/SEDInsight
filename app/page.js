@@ -411,10 +411,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     const localPeriodCounts = summarizePeriods(model.numberedPointsList);
     const localPeriods = [...localPeriodCounts.entries()].map(([periodKey, rowCount]) => ({ periodKey, label: formatPeriodLabel(periodKey), rowCount, local: true }));
     setFaultPeriods(localPeriods);
-    const localSelection = resolveActivePeriodSelection(localPeriods, selectedPeriodKeysRef.current, {
-      preserveSelection: hasManualPeriodSelectionRef.current
-    });
-    updateSelectedPeriodKeys(localSelection);
     setSedMonthlyMetrics([]);
     setCircuitMonthlyMetrics([]);
     setPeriodSupport(false);
@@ -644,15 +640,20 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   }
 
   // El matching sigue centralizado en sedUtils. La vista completa omite solo el filtro de llave.
-  const periodFilteredPoints = deduplicateSelectedFaults(filterFaultsByPeriods(numberedPointsList, selectedPeriodKeys)).faults;
-  const sedFaultRanking = sortSedPeriodMetrics(buildSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, selectedPeriodKeys), 'faultCount')
+  const activePeriodKeys = isSupabaseSource
+    ? selectedPeriodKeys
+    : [...summarizePeriods(numberedPointsList).keys()].sort();
+  const periodFilteredPoints = deduplicateSelectedFaults(
+    isSupabaseSource ? filterFaultsByPeriods(numberedPointsList, activePeriodKeys) : numberedPointsList
+  ).faults;
+  const sedFaultRanking = sortSedPeriodMetrics(buildSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, activePeriodKeys), 'faultCount')
     .filter(item => activeWorkSedIds.length === 0 || activeWorkSedIds.includes(item.sedId))
     .map((item, index) => ({ ...item, rank: index + 1 }));
   const selectedSedPeriodSummary = sedFaultRanking.find(item => item.sedId === currentSedId) || null;
   const selectedSedMetricReconciliation = currentSedId
-    ? reconcileSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, selectedPeriodKeys, currentSedId)
+    ? reconcileSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, activePeriodKeys, currentSedId)
     : null;
-  const selectedPeriodLabel = formatSelectedPeriodLabel(selectedPeriodKeys);
+  const selectedPeriodLabel = formatSelectedPeriodLabel(activePeriodKeys);
   const selectedLlavePoints = filterFaultsForCircuitView(periodFilteredPoints, {
     sedId: currentSedId,
     llaveId: currentLlaveId,
@@ -1224,7 +1225,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       const economicIsCurrent = liveEconomic?.input && economicAnalysisInput
         && JSON.stringify(liveEconomic.input) === JSON.stringify(economicAnalysisInput);
       const model = buildReportModel({
-        sedId: currentSedId, llaveId: showFullSedView ? '' : currentLlaveId, selectedPeriodKeys,
+        sedId: currentSedId, llaveId: showFullSedView ? '' : currentLlaveId, selectedPeriodKeys: activePeriodKeys,
         faults: visibleFaultPoints, circuitFaults: selectedLlavePoints,
         network: showFullSedView ? sedOverviewLlaves : currentLlaveData ? [{ llaveId: currentLlaveId, lines: currentLlaveData.lines }] : [],
         sedCoordinate: currentSedCoord,
@@ -1780,13 +1781,13 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       .filter(Boolean)
     : [];
   const selectedDistance = selectedManualEdgeRefs.reduce((total, ref) => total + (Number(ref.lengthMeters) || 0), 0);
-  const selectedPeriodSignature = selectedPeriodKeys.join('|');
+  const selectedPeriodSignature = activePeriodKeys.join('|');
   const economicAnalysisInput = selectedAnalysisSegment && analysisPeriodSignature === selectedPeriodSignature
     ? buildEconomicAnalysisInput({
       sedId: currentSedId,
       circuitId: currentLlaveId,
       analysisUnit: selectedAnalysisSegment,
-      selectedPeriodKeys,
+      selectedPeriodKeys: activePeriodKeys,
       availablePeriods: faultPeriods,
       faults: selectedLlavePoints,
       circuitCompensationRows: circuitMonthlyMetrics,
@@ -2286,7 +2287,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           onDeleteMainProject={handleDeleteMainProject}
           onCloseLocalProject={handleCloseLocalProject}
           faultPeriods={faultPeriods}
-          selectedPeriodKeys={selectedPeriodKeys}
+          selectedPeriodKeys={activePeriodKeys}
+          periodFilteringEnabled={isSupabaseSource}
           onChangeSelectedPeriods={handleChangeSelectedPeriods}
           sedFaultRanking={sedFaultRanking}
           periodSupport={periodSupport && isSupabaseSource}

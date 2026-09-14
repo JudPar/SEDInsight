@@ -33,6 +33,7 @@ export default function DataManagementPanel({
   faultPoints,
   periods,
   selectedPeriodKeys,
+  periodFilteringEnabled = true,
   onChangeSelectedPeriods,
   ranking,
   onSelectSed,
@@ -98,11 +99,13 @@ export default function DataManagementPanel({
   }, [seds]);
 
   function applyPreset(count) {
+    if (!periodFilteringEnabled) return;
     const hasMonthlyPeriods = periods.some(period => isMonthlyPeriodKey(period.periodKey));
     onChangeSelectedPeriods(selectRecentPeriods(periods, count, { includeUnassigned: !hasMonthlyPeriods && periods.some(period => period.periodKey === UNASSIGNED_PERIOD_KEY) }));
   }
 
   function togglePeriod(periodKey) {
+    if (!periodFilteringEnabled) return;
     const next = new Set(selectedSet);
     if (next.has(periodKey)) next.delete(periodKey); else next.add(periodKey);
     onChangeSelectedPeriods([...next]);
@@ -289,8 +292,9 @@ export default function DataManagementPanel({
       </div>
 
       <div className="card-title"><i className="fa-solid fa-calendar-days"></i> Periodo de fallas</div>
-      <div className="period-presets"><button onClick={() => applyPreset(1)}>1 mes</button><button onClick={() => applyPreset(2)}>2 meses</button><button onClick={() => applyPreset(3)}>3 meses</button><button onClick={() => applyPreset(6)}>6 meses</button></div>
-      <div className="period-list">{periods.map(period => <label key={period.periodKey}><input type="checkbox" checked={selectedSet.has(period.periodKey)} onChange={() => togglePeriod(period.periodKey)} /><span>{period.label}<small>Carga: {formatLoadDate(period.createdAt)}</small></span><b>{period.rowCount}</b>{periodSupport && period.periodKey !== UNASSIGNED_PERIOD_KEY && <button type="button" onClick={(event) => { event.preventDefault(); removePeriod(period); }} title="Eliminar solo este periodo"><i className="fa-solid fa-trash-can"></i></button>}</label>)}</div>
+      {!periodFilteringEnabled && <p className="project-help"><b>Proyecto local:</b> se muestran todas sus fallas; el filtro de la Base Principal no se aplica.</p>}
+      <div className="period-presets"><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(1)}>1 mes</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(2)}>2 meses</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(3)}>3 meses</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(6)}>6 meses</button></div>
+      <div className="period-list">{periods.map(period => <label key={period.periodKey}><input type="checkbox" disabled={!periodFilteringEnabled} checked={selectedSet.has(period.periodKey)} onChange={() => togglePeriod(period.periodKey)} /><span>{period.label}<small>Carga: {formatLoadDate(period.createdAt)}</small></span><b>{period.rowCount}</b>{periodSupport && period.periodKey !== UNASSIGNED_PERIOD_KEY && <button type="button" onClick={(event) => { event.preventDefault(); removePeriod(period); }} title="Eliminar solo este periodo"><i className="fa-solid fa-trash-can"></i></button>}</label>)}</div>
 
       <div className="card-title"><i className="fa-solid fa-ranking-star"></i> Indicadores por SED</div>
       <div className="ranking-summary">{ranking.length} SED analizadas · {ranking.reduce((sum, item) => sum + item.faultCount, 0)} fallas seleccionadas</div>

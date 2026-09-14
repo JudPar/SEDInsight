@@ -7,6 +7,7 @@ import { createSupabaseLifecycleRepository, deleteCurrentProject, discardStaging
 const migrationUrl = new URL('../supabase/migrations/20260828_project_staging_and_lifecycle.sql', import.meta.url);
 const auditMigrationUrl = new URL('../supabase/migrations/20260828070000_distinguish_project_import_audit.sql', import.meta.url);
 const deleteSafeUpdateMigrationUrl = new URL('../supabase/migrations/20260831090000_fix_delete_current_project_safeupdate.sql', import.meta.url);
+const circuitMetricsLifecycleFixUrl = new URL('../supabase/migrations/20260914090000_fix_project_lifecycle_circuit_metrics.sql', import.meta.url);
 const pageUrl = new URL('../app/page.js', import.meta.url);
 const panelUrl = new URL('../components/ProjectPanel.js', import.meta.url);
 const directImporterUrl = new URL('../lib/projectImport.js', import.meta.url);
@@ -212,6 +213,22 @@ test('incremental delete RPC uses explicit non-null primary-key predicates', asy
   assert.doesNotMatch(sql, /\btruncate\b|where\s+true/);
   assert.doesNotMatch(sql, /(insert\s+into|update|delete\s+from)\s+public\.suministros_coordenadas/);
   assert.match(sql.trim(), /commit;$/);
+});
+
+test('project lifecycle removes circuit compensation before its period and circuit parents', async () => {
+  const sql = (await readFile(circuitMetricsLifecycleFixUrl, 'utf8')).toLowerCase();
+  const replaceStart = sql.indexOf('create or replace function public.geopluz_replace_current_project');
+  const deleteStart = sql.indexOf('create or replace function public.geopluz_delete_current_project');
+  const replaceBody = sql.slice(replaceStart, deleteStart);
+  const deleteBody = sql.slice(deleteStart);
+  for (const body of [replaceBody, deleteBody]) {
+    assert.ok(body.indexOf('delete from public.circuit_monthly_metrics') < body.indexOf('delete from public.fault_periods'));
+    assert.ok(body.indexOf('delete from public.circuit_monthly_metrics') < body.indexOf('delete from public.llaves'));
+    assert.match(body, /lock table[^;]+public\.circuit_monthly_metrics/);
+  }
+  assert.match(deleteBody, /exists \(select 1 from public\.circuit_monthly_metrics\)/);
+  assert.doesNotMatch(sql, /\btruncate\b|where\s+true/);
+  assert.doesNotMatch(sql, /(insert\s+into|update|delete\s+from)\s+public\.suministros_coordenadas/);
 });
 
 test('staging ownership is enforced by manifest foreign keys, RLS and scoped cleanup', async () => {

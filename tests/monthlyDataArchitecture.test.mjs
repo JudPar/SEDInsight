@@ -321,12 +321,12 @@ test('complete GEOPLUZ_PROJECT round-trip preserves monthly identity fields', as
   assert.equal(projectToInternalModel(project).numberedPointsList[0].callCount, 0);
 });
 
-test('period-selected faults are the only input wired to circuit and SED filters', () => {
+test('period-selected faults drive Supabase while local projects keep their complete fault set', () => {
   const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
   assert.match(page, /fetchSupabaseFaultsForPeriods/);
   assert.match(page, /\.in\('period_key', monthlyKeys\)/);
   assert.match(page, /\.is\('period_key', null\)/);
-  assert.match(page, /periodFilteredPoints = deduplicateSelectedFaults\(filterFaultsByPeriods/);
+  assert.match(page, /isSupabaseSource \? filterFaultsByPeriods\(numberedPointsList, activePeriodKeys\) : numberedPointsList/);
   assert.match(page, /faultPoints=\{periodFilteredPoints\}/);
   assert.match(page, /selectedLlavePoints = filterFaultsForCircuitView\(periodFilteredPoints/);
   assert.match(page, /analyzeCircuit\(linesData, selectedLlavePoints/);
