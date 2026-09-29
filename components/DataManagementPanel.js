@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { formatPeriodLabel, isMonthlyPeriodKey, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
+import { formatPeriodLabel, isMonthlyPeriodKey, selectAllPeriods, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '@/lib/faultPeriods';
 import { prepareMonthlyFaultImport } from '@/lib/monthlyFaultImport';
 import { detectCompensationImportKind, prepareMonthlyCircuitCompensationImport, prepareMonthlyCompensationImport, summarizeCircuitCompensationPeriods } from '@/lib/monthlyCompensationImport';
 import { sortSedPeriodMetrics, summarizeCompensationPeriods } from '@/lib/sedMetrics';
@@ -100,8 +100,23 @@ export default function DataManagementPanel({
 
   function applyPreset(count) {
     if (!periodFilteringEnabled) return;
+    if (count === 'all') {
+      onChangeSelectedPeriods(selectAllPeriods(periods));
+      return;
+    }
     const hasMonthlyPeriods = periods.some(period => isMonthlyPeriodKey(period.periodKey));
     onChangeSelectedPeriods(selectRecentPeriods(periods, count, { includeUnassigned: !hasMonthlyPeriods && periods.some(period => period.periodKey === UNASSIGNED_PERIOD_KEY) }));
+  }
+
+  function isPresetActive(count) {
+    const allKeys = selectAllPeriods(periods);
+    const allSelected = allKeys.length > 0 && allKeys.length === selectedSet.size && allKeys.every(key => selectedSet.has(key));
+    if (allSelected) return count === 'all';
+    if (count === 'all') return false;
+    const keys = selectRecentPeriods(periods, count, {
+      includeUnassigned: !periods.some(period => isMonthlyPeriodKey(period.periodKey)) && periods.some(period => period.periodKey === UNASSIGNED_PERIOD_KEY)
+    });
+    return keys.length > 0 && keys.length === selectedSet.size && keys.every(key => selectedSet.has(key));
   }
 
   function togglePeriod(periodKey) {
@@ -293,7 +308,9 @@ export default function DataManagementPanel({
 
       <div className="card-title"><i className="fa-solid fa-calendar-days"></i> Periodo de fallas</div>
       {!periodFilteringEnabled && <p className="project-help"><b>Proyecto local:</b> se muestran todas sus fallas; el filtro de la Base Principal no se aplica.</p>}
-      <div className="period-presets"><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(1)}>1 mes</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(2)}>2 meses</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(3)}>3 meses</button><button disabled={!periodFilteringEnabled} onClick={() => applyPreset(6)}>6 meses</button></div>
+      <div className="period-presets period-selection-presets">{[
+        [1, '1 mes'], [2, '2 meses'], [3, '3 meses'], [6, '6 meses'], [12, '12 meses'], ['all', 'Todo']
+      ].map(([count, label]) => <button key={count} type="button" disabled={!periodFilteringEnabled} aria-pressed={isPresetActive(count)} onClick={() => applyPreset(count)}>{label}</button>)}</div>
       <div className="period-list">{periods.map(period => <label key={period.periodKey}><input type="checkbox" disabled={!periodFilteringEnabled} checked={selectedSet.has(period.periodKey)} onChange={() => togglePeriod(period.periodKey)} /><span>{period.label}<small>Carga: {formatLoadDate(period.createdAt)}</small></span><b>{period.rowCount}</b>{periodSupport && period.periodKey !== UNASSIGNED_PERIOD_KEY && <button type="button" onClick={(event) => { event.preventDefault(); removePeriod(period); }} title="Eliminar solo este periodo"><i className="fa-solid fa-trash-can"></i></button>}</label>)}</div>
 
       <div className="card-title"><i className="fa-solid fa-ranking-star"></i> Indicadores por SED</div>

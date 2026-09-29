@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildSedFaultRanking, deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, resolveActivePeriodSelection, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '../lib/faultPeriods.js';
+import { buildSedFaultRanking, deduplicateSelectedFaults, filterFaultsByPeriods, formatPeriodLabel, formatSelectedPeriodLabel, resolveActivePeriodSelection, selectAllPeriods, selectRecentPeriods, UNASSIGNED_PERIOD_KEY } from '../lib/faultPeriods.js';
+import { fetchAllSupabaseRows } from '../lib/supabasePagination.js';
 import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeCallCount, normalizeFaultCause, prepareMonthlyFaultImport } from '../lib/monthlyFaultImport.js';
 import { normalizeCompensation, prepareMonthlyCompensationImport } from '../lib/monthlyCompensationImport.js';
 import { buildSedPeriodMetrics, sortSedPeriodMetrics, summarizeCompensationPeriods } from '../lib/sedMetrics.js';
@@ -86,13 +87,37 @@ test('1, 3 and 6 month presets choose the newest periods deterministically', () 
   assert.equal(selectRecentPeriods(periods, 6).length, 6);
 });
 
+test('12 months and Todo include the intended periods, including unassigned faults', () => {
+  const periods = Array.from({ length: 14 }, (_, index) => ({ periodKey: `${2025 + Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}` }))
+    .concat({ periodKey: UNASSIGNED_PERIOD_KEY });
+  const lastTwelve = selectRecentPeriods(periods, 12);
+  assert.equal(lastTwelve.length, 12);
+  assert.equal(lastTwelve[0], '2026-02');
+  const all = selectAllPeriods(periods);
+  assert.equal(all.length, 15);
+  assert.equal(all.at(-1), UNASSIGNED_PERIOD_KEY);
+  assert.deepEqual(resolveActivePeriodSelection(periods, []), all);
+  assert.deepEqual(resolveActivePeriodSelection(periods, ['2025-01'], { preserveSelection: true }), ['2025-01']);
+});
+
+test('Todo retrieves every Supabase page without truncating at 1000 rows', async () => {
+  const source = Array.from({ length: 2105 }, (_, index) => ({ id: index + 1 }));
+  const ranges = [];
+  const result = await fetchAllSupabaseRows(async (start, end) => {
+    ranges.push([start, end]);
+    return { data: source.slice(start, end + 1), error: null };
+  });
+  assert.deepEqual(result, source);
+  assert.deepEqual(ranges, [[0, 999], [1000, 1999], [2000, 2999]]);
+});
+
 test('default economic period selection uses the newest six months and formats the interval', () => {
   const periods = ['2026-04', '2026-01', '2026-06', '2026-03', '2026-05', '2026-02'].map(periodKey => ({ periodKey }));
   assert.deepEqual(selectRecentPeriods(periods), ['2026-06', '2026-05', '2026-04', '2026-03', '2026-02', '2026-01']);
   assert.match(formatSelectedPeriodLabel(periods.map(item => item.periodKey)), /6 meses/);
 });
 
-test('manual period selection survives refreshes while the base defaults to available months up to six', () => {
+test('manual period selection survives refreshes while the base defaults to Todo', () => {
   const periods = ['2026-07', '2026-09', '2026-08'].map(periodKey => ({ periodKey }));
   assert.deepEqual(resolveActivePeriodSelection(periods, [], { preserveSelection: false }), ['2026-09', '2026-08', '2026-07']);
   assert.deepEqual(resolveActivePeriodSelection(periods, ['2026-08'], { preserveSelection: true }), ['2026-08']);

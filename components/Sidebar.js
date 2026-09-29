@@ -35,10 +35,6 @@ export default function Sidebar({
   setCurrentLlaveId,
   showFullSedView,
   onToggleFullSedView,
-  currentTheme,
-  setCurrentTheme,
-  currentMapStyle,
-  setCurrentMapStyle,
   isAddPointMode,
   setIsAddPointMode,
   isPresentationMode,
@@ -228,17 +224,6 @@ export default function Sidebar({
     setShowJsonPasteModal(false);
   };
 
-  // Toggle tema oscuro
-  const toggleTheme = () => {
-    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
-    setCurrentTheme(newTheme);
-    if (newTheme === 'dark') {
-      document.body.classList.add('dark-theme');
-    } else {
-      document.body.classList.remove('dark-theme');
-    }
-  };
-
   const handleJsonChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       onImportJson(e.target.files);
@@ -272,18 +257,6 @@ export default function Sidebar({
           </div>
         </div>
         <div style={{ display: 'flex', gap: '6px' }}>
-          <button 
-            className="theme-toggle-btn" 
-            onClick={() => setCurrentMapStyle(prev => prev === 'clean' ? 'detailed' : 'clean')}
-            title="Cambiar a mapa limpio sin comercios ni mercados para mayor rapidez"
-          >
-            <i className={`fa-solid ${currentMapStyle === 'clean' ? 'fa-layer-group' : 'fa-map-location-dot'}`}></i>
-            <span>{currentMapStyle === 'clean' ? 'Mapa Limpio' : 'Mapa Detallado'}</span>
-          </button>
-          <button className="theme-toggle-btn" onClick={toggleTheme}>
-            <i className={`fa-solid ${currentTheme === 'dark' ? 'fa-sun' : 'fa-moon'}`}></i>
-            <span>{currentTheme === 'dark' ? 'Modo Claro' : 'Modo Oscuro'}</span>
-          </button>
           <button className="theme-toggle-btn mode-switch-btn" onClick={onTogglePresentationMode} title="Cambiar a modo presentación">
             <i className="fa-solid fa-desktop"></i>
             <span>Presentación</span>

@@ -7,6 +7,7 @@ import PresentationTablePanel from '@/components/PresentationTablePanel';
 import DataSourceBadge from '@/components/DataSourceBadge';
 import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sortSedIds } from '@/lib/navigationSort';
 import { supabase } from '@/lib/supabase';
+import { fetchAllSupabaseRows } from '@/lib/supabasePagination';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { buildReportModel } from '@/lib/reportModel';
@@ -32,8 +33,6 @@ export default function PresentacionPage() {
   const [showFullSedView, setShowFullSedView] = useState(true);
 
   // Estado UI
-  const [currentTheme, setCurrentTheme] = useState('light');
-  const [currentMapStyle, setCurrentMapStyle] = useState('clean');
   const [activeMajorOverlays, setActiveMajorOverlays] = useState(() => new Set());
   const [dataSource, setDataSource] = useState({ kind: 'SUPABASE', readOnly: false, projectId: 'geopluz-main', projectName: 'Base Principal GEOPLUZ' });
   
@@ -58,8 +57,8 @@ export default function PresentacionPage() {
   }, []);
 
   useEffect(() => {
-    document.body.classList.toggle('dark-theme', currentTheme === 'dark');
-  }, [currentTheme]);
+    document.body.classList.remove('dark-theme');
+  }, []);
 
   // Carga de Datos desde Supabase
   async function loadData() {
@@ -99,7 +98,7 @@ export default function PresentacionPage() {
     try {
       const { data: sedsData, error: sedsError } = await supabase.from('seds').select('*').range(0, 99999);
       const { data: llavesData } = await supabase.from('llaves').select('*').range(0, 99999);
-      const { data: fallasData } = await supabase.from('fallas').select('*').range(0, 99999);
+      const fallasData = await fetchAllSupabaseRows((start, end) => supabase.from('fallas').select('*').order('id', { ascending: true }).range(start, end));
       
       if (!sedsError && sedsData) {
         const db = {};
@@ -243,8 +242,6 @@ export default function PresentacionPage() {
       <div className="map-container">
         <MapViewer
           ref={mapRef}
-          currentTheme={currentTheme}
-          currentMapStyle={currentMapStyle}
           circuitId={`${currentSedId}:${showFullSedView ? 'SED_COMPLETA' : currentLlaveId}`}
           llaveData={currentLlaveData}
           sedOverviewLlaves={sedOverviewLlaves}
@@ -285,12 +282,8 @@ export default function PresentacionPage() {
           setCurrentLlaveId(selection.llaveId);
           setShowFullSedView(selection.showFullSedView);
         }}
-        currentMapStyle={currentMapStyle}
-        currentTheme={currentTheme}
         onPrevSed={() => navigateSed(-1)}
         onNextSed={() => navigateSed(1)}
-        onToggleMapStyle={() => setCurrentMapStyle(s => s === 'clean' ? 'detailed' : 'clean')}
-        onToggleTheme={() => setCurrentTheme(theme => theme === 'light' ? 'dark' : 'light')}
         onEnterEditMode={() => { window.location.href = '/'; }}
       />
       <PresentationTablePanel

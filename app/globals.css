@@ -317,6 +317,8 @@ select.input-control option {
 .period-presets { display: flex; gap: 5px; }
 .period-presets button { flex: 1; }
 .period-presets button { padding: 5px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-secondary); color: var(--text-main); cursor: pointer; font-size: 10px; }
+.period-selection-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.period-selection-presets button[aria-pressed="true"] { border-color: var(--accent-cyan); color: var(--accent-cyan); font-weight: 700; }
 .period-list { display: grid; max-height: 175px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 5px; }
 .period-list label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 6px 7px; border-bottom: 1px solid var(--border-color); font-size: 10px; }
 .period-list label:last-child { border-bottom: 0; }

@@ -14,12 +14,8 @@ export default function PresentationHUD({
   showAllLlavesOption = false,
   onSelectSed,
   onSelectLlave,
-  currentMapStyle,
-  currentTheme = 'light',
   onPrevSed,
   onNextSed,
-  onToggleMapStyle,
-  onToggleTheme,
   onEnterEditMode
 }) {
   const [statusFilter, setStatusFilter] = useState('todos');
@@ -88,8 +84,6 @@ export default function PresentationHUD({
     <div className="hud-actions">
       <button className="hud-btn" onClick={onPrevSed}><i className="fa-solid fa-chevron-left"></i> SED Ant.</button>
       <button className="hud-btn" onClick={onNextSed}>SED Sig. <i className="fa-solid fa-chevron-right"></i></button>
-      <button className="hud-btn" onClick={onToggleMapStyle}><i className={`fa-solid ${currentMapStyle === 'clean' ? 'fa-layer-group' : 'fa-map-location-dot'}`}></i><span>{currentMapStyle === 'clean' ? 'Mapa Limpio' : 'Mapa Detallado'}</span></button>
-      <button className="hud-btn" onClick={onToggleTheme} title={currentTheme === 'dark' ? 'Activar modo claro' : 'Activar modo oscuro'}><i className={`fa-solid ${currentTheme === 'dark' ? 'fa-sun' : 'fa-moon'}`}></i><span>{currentTheme === 'dark' ? 'Modo Claro' : 'Modo Oscuro'}</span></button>
       <button className="hud-btn hud-edit-btn" onClick={onEnterEditMode}><i className="fa-solid fa-pen-to-square"></i> Modo Edición</button>
     </div>
   </div>;

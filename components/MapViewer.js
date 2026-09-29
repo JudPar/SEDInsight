@@ -27,8 +27,7 @@ function getFaultIdentity(point, fallbackIndex = '') {
 }
 
 const MapViewer = forwardRef(({
-  currentTheme,
-  currentMapStyle,
+  currentTheme = 'light',
   circuitId,
   llaveData,
   sedOverviewLlaves = [],
@@ -60,9 +59,6 @@ const MapViewer = forwardRef(({
 }, ref) => {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
-  const cleanTileLayerRef = useRef(null);
-  const osmTileLayerRef = useRef(null);
-  const darkTileLayerRef = useRef(null);
   const networkLayerGroupRef = useRef(null);
   const pointsLayerGroupRef = useRef(null);
   const spiderLayerGroupRef = useRef(null);
@@ -254,10 +250,8 @@ const MapViewer = forwardRef(({
     // Control de zoom
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // Definir capas base
-    cleanTileLayerRef.current = L.tileLayer(TILE_LAYERS.clean.url, TILE_LAYERS.clean.options);
-    osmTileLayerRef.current = L.tileLayer(TILE_LAYERS.detailed.url, TILE_LAYERS.detailed.options);
-    darkTileLayerRef.current = L.tileLayer(TILE_LAYERS.dark.url, TILE_LAYERS.dark.options);
+    // Unica capa base disponible.
+    L.tileLayer(TILE_LAYERS.detailed.url, TILE_LAYERS.detailed.options).addTo(map);
 
     // Grupos de capas
     networkLayerGroupRef.current = L.layerGroup().addTo(map);
@@ -300,27 +294,6 @@ const MapViewer = forwardRef(({
       }
     };
   }, []);
-
-  // Actualizar capa base según tema y estilo
-  useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    const map = mapInstanceRef.current;
-
-    // Remover todas primero
-    map.removeLayer(cleanTileLayerRef.current);
-    map.removeLayer(osmTileLayerRef.current);
-    map.removeLayer(darkTileLayerRef.current);
-
-    if (currentTheme === 'dark') {
-      darkTileLayerRef.current.addTo(map);
-    } else {
-      if (currentMapStyle === 'clean') {
-        cleanTileLayerRef.current.addTo(map);
-      } else {
-        osmTileLayerRef.current.addTo(map);
-      }
-    }
-  }, [currentTheme, currentMapStyle]);
 
   // Dibujar red (llaveData y SED)
   useEffect(() => {

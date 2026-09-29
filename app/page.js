@@ -11,6 +11,7 @@ import TicketConflictModal from '@/components/TicketConflictModal';
 import DataSourceBadge from '@/components/DataSourceBadge';
 import { resolvePresentationLlaveSelection, resolvePresentationSedSelection, sortLlaveIds, sortSedIds } from '@/lib/navigationSort';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { fetchAllSupabaseRows } from '@/lib/supabasePagination';
 import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { buildReportModel } from '@/lib/reportModel';
@@ -126,8 +127,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const [showFullSedView, setShowFullSedView] = useState(true);
 
   // Estado UI
-  const [currentTheme, setCurrentTheme] = useState('light');
-  const [currentMapStyle, setCurrentMapStyle] = useState('clean');
   const [isAddPointMode, setIsAddPointMode] = useState(false);
   const [isPresentationMode, setIsPresentationMode] = useState(true);
   const [relocatingPointIndex, setRelocatingPointIndex] = useState(null);
@@ -223,8 +222,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   }, []);
 
   useEffect(() => {
-    document.body.classList.toggle('dark-theme', currentTheme === 'dark');
-  }, [currentTheme]);
+    document.body.classList.remove('dark-theme');
+  }, []);
 
   async function initializeData() {
     if (isSedRoute) {
@@ -257,19 +256,16 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function fetchSupabaseFaultsForPeriods(periodKeys, supportsPeriods) {
     if (!supabase) return [];
     if (!supportsPeriods) {
-      const { data, error } = await supabase.from('fallas').select('*').order('id', { ascending: true }).range(0, 99999);
-      if (error) throw error;
-      return mapSupabaseFaultRows(data || []);
+      const rows = await fetchAllSupabaseRows((start, end) => supabase.from('fallas').select('*').order('id', { ascending: true }).range(start, end));
+      return mapSupabaseFaultRows(rows);
     }
     const monthlyKeys = [...new Set((periodKeys || []).filter(key => key !== UNASSIGNED_PERIOD_KEY))];
     const requests = [];
-    if (monthlyKeys.length) requests.push(supabase.from('fallas').select('*').in('period_key', monthlyKeys).order('id', { ascending: true }).range(0, 99999));
-    if ((periodKeys || []).includes(UNASSIGNED_PERIOD_KEY)) requests.push(supabase.from('fallas').select('*').is('period_key', null).order('id', { ascending: true }).range(0, 99999));
+    if (monthlyKeys.length) requests.push(fetchAllSupabaseRows((start, end) => supabase.from('fallas').select('*').in('period_key', monthlyKeys).order('id', { ascending: true }).range(start, end)));
+    if ((periodKeys || []).includes(UNASSIGNED_PERIOD_KEY)) requests.push(fetchAllSupabaseRows((start, end) => supabase.from('fallas').select('*').is('period_key', null).order('id', { ascending: true }).range(start, end)));
     if (!requests.length) return [];
     const results = await Promise.all(requests);
-    const failed = results.find(result => result.error);
-    if (failed?.error) throw failed.error;
-    const rows = results.flatMap(result => result.data || []).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    const rows = results.flat().sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
     return mapSupabaseFaultRows(rows);
   }
 
@@ -2223,10 +2219,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           setCurrentLlaveId={handleEditLlaveSelect}
           showFullSedView={showFullSedView}
           onToggleFullSedView={handleToggleFullSedView}
-          currentTheme={currentTheme}
-          setCurrentTheme={setCurrentTheme}
-          currentMapStyle={currentMapStyle}
-          setCurrentMapStyle={setCurrentMapStyle}
           isAddPointMode={isAddPointMode}
           setIsAddPointMode={setIsAddPointMode}
           isPresentationMode={isPresentationMode}
@@ -2313,8 +2305,6 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       <div className="map-container">
         <MapViewer
           ref={mapRef}
-          currentTheme={currentTheme}
-          currentMapStyle={currentMapStyle}
           circuitId={`${currentSedId}:${showFullSedView ? 'SED_COMPLETA' : currentLlaveId}`}
           llaveData={currentLlaveData}
           sedOverviewLlaves={sedOverviewLlaves}
@@ -2358,12 +2348,8 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
             showAllLlavesOption
             onSelectSed={handlePresentationSedSelect}
             onSelectLlave={handlePresentationLlaveSelect}
-            currentMapStyle={currentMapStyle}
-            currentTheme={currentTheme}
             onPrevSed={() => navigateSed(-1)}
             onNextSed={() => navigateSed(1)}
-            onToggleMapStyle={() => setCurrentMapStyle(s => s === 'clean' ? 'detailed' : 'clean')}
-            onToggleTheme={() => setCurrentTheme(theme => theme === 'light' ? 'dark' : 'light')}
             onEnterEditMode={handleEnterEditMode}
           />
           <PresentationTablePanel
