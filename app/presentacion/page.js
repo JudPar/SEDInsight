@@ -73,8 +73,10 @@ export default function PresentacionPage() {
         setDataSource({ kind: 'LOCAL_PROJECT', readOnly: true, projectId: localProject.project.id, projectName: localProject.project.name });
         const firstSed = Object.keys(model.localDatabase)[0];
         if (firstSed) {
-          setCurrentSedId(firstSed);
-          setCurrentLlaveId('');
+          const selection = resolvePresentationSedSelection(firstSed, model.localDatabase[firstSed]?.llaves);
+          setCurrentSedId(selection.sedId);
+          setCurrentLlaveId(selection.llaveId);
+          setShowFullSedView(selection.showFullSedView);
         }
         return;
       }
@@ -154,8 +156,10 @@ export default function PresentacionPage() {
         // Initialize with first SED
         const firstSed = Object.keys(db)[0];
         if (firstSed) {
-           setCurrentSedId(firstSed);
-           setCurrentLlaveId('');
+          const selection = resolvePresentationSedSelection(firstSed, db[firstSed]?.llaves);
+          setCurrentSedId(selection.sedId);
+          setCurrentLlaveId(selection.llaveId);
+          setShowFullSedView(selection.showFullSedView);
         }
       }
     } catch (err) {
@@ -207,7 +211,8 @@ export default function PresentacionPage() {
     let newIndex = currentIndex + dir;
     if (newIndex < 0) newIndex = sedsList.length - 1;
     if (newIndex >= sedsList.length) newIndex = 0;
-    const selection = resolvePresentationSedSelection(sedsList[newIndex]);
+    const nextSedId = sedsList[newIndex];
+    const selection = resolvePresentationSedSelection(nextSedId, localDatabase[nextSedId]?.llaves);
     setCurrentSedId(selection.sedId);
     setCurrentLlaveId(selection.llaveId);
     setShowFullSedView(selection.showFullSedView);
@@ -272,7 +277,7 @@ export default function PresentacionPage() {
         showFullSedView={showFullSedView}
         showAllLlavesOption
         onSelectSed={(sedId) => {
-          const selection = resolvePresentationSedSelection(sedId);
+          const selection = resolvePresentationSedSelection(sedId, localDatabase[sedId]?.llaves);
           setCurrentSedId(selection.sedId);
           setCurrentLlaveId(selection.llaveId);
           setShowFullSedView(selection.showFullSedView);

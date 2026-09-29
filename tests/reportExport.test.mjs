@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { reportFixture } from './fixtures/reportFixture.mjs';
 import { buildReportModel, fitReportImage, groupExactReportCoordinates, reportSpiderOffsets } from '../lib/reportModel.js';
-import { buildReportMapLayout } from '../lib/reportMap.js';
+import { buildReportMapLayout, layoutReportFaultMarkers } from '../lib/reportMap.js';
 import { buildReportWorkbook } from '../lib/excelUtils.js';
 import { buildReportPdf } from '../lib/pdfUtils.js';
 
@@ -33,6 +33,32 @@ test('spiderfy is a graphic multi-ring layout with no change to anchor', () => {
   assert.equal(new Set(offsets.map(p => JSON.stringify(p))).size, 25);
   assert.ok(Math.hypot(offsets[24].x, offsets[24].y) > Math.hypot(offsets[0].x, offsets[0].y));
   assert.deepEqual(reportSpiderOffsets(1), [{ x: 0, y: 0 }]);
+});
+
+test('nearby report faults get readable numbered markers with leaders to original locations', () => {
+  const groups = [
+    { coordinate: [-12, -77], members: [{ number: 1, color: '#f00' }, { number: 2, color: '#0f0' }] },
+    { coordinate: [-11.9999, -77], members: [{ number: 3, color: '#00f' }] },
+    { coordinate: [-11.9998, -77], members: [{ number: 4, color: '#f0f' }] }
+  ];
+  const project = coordinate => ({ x: 400, y: 400 + (coordinate[0] + 12) * 100000 });
+  const markers = layoutReportFaultMarkers(groups, project, 1600, 800);
+  assert.deepEqual(markers.map(item => item.number), [1, 2, 3, 4]);
+  for (let i = 0; i < markers.length; i += 1) {
+    assert.deepEqual(markers[i].anchor, project(groups[Math.max(0, i - 1)].coordinate));
+    assert.notEqual(markers[i].x, markers[i].anchor.x);
+    for (let j = 0; j < i; j += 1) {
+      assert.ok(Math.hypot(markers[i].x - markers[j].x, markers[i].y - markers[j].y) >= 38);
+    }
+  }
+  assert.deepEqual(layoutReportFaultMarkers(groups, project, 1600, 800), markers);
+  const single = layoutReportFaultMarkers([{ coordinate: [-12, -77], members: [{ number: 1, color: '#f00' }] }], project, 1600, 800);
+  assert.deepEqual({ x: single[0].x, y: single[0].y }, single[0].anchor);
+  const dense = layoutReportFaultMarkers([{
+    coordinate: [-12, -77], members: Array.from({ length: 25 }, (_, index) => ({ number: index + 1, color: '#f00' }))
+  }], project, 1600, 800);
+  assert.equal(dense.length, 25);
+  assert.equal(new Set(dense.map(item => `${item.x},${item.y}`)).size, 25);
 });
 
 test('both image placements preserve the fixed map aspect ratio exactly', () => {

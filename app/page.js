@@ -683,7 +683,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   };
 
   const handlePresentationSedSelect = (sedId) => {
-    const selection = resolvePresentationSedSelection(sedId);
+    const selection = resolvePresentationSedSelection(sedId, localDatabase[sedId]?.llaves);
     runNavigationTransition('Cargando SED...', () => {
       setCurrentSedId(selection.sedId);
       setCurrentLlaveId(selection.llaveId);

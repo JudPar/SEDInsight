@@ -45,6 +45,20 @@ test('selecting any SED starts in full SED view with no stale llave', () => {
   });
 });
 
+test('presentation selects the only llave automatically and keeps multi-llave SED overview', () => {
+  assert.deepEqual(resolvePresentationSedSelection('ONE-KEY', { '10SP': {} }), {
+    sedId: 'ONE-KEY', llaveId: '10SP', showFullSedView: false
+  });
+  assert.deepEqual(resolvePresentationSedSelection('TWO-KEYS', { '10SP': {}, '20SP': {} }), {
+    sedId: 'TWO-KEYS', llaveId: '', showFullSedView: true
+  });
+  assert.deepEqual(resolvePresentationSedSelection('', { '10SP': {} }), {
+    sedId: '', llaveId: '', showFullSedView: false
+  });
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  assert.match(page, /resolvePresentationSedSelection\(sedId, localDatabase\[sedId\]\?\.llaves\)/);
+});
+
 test('a llave selects its circuit and Todas las llaves restores the full SED', () => {
   assert.deepEqual(resolvePresentationLlaveSelection('00007S', 'T-03'), {
     sedId: '00007S',
