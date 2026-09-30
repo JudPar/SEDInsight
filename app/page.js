@@ -30,11 +30,11 @@ import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFa
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
 import { buildSedPath, buildSedUrl, normalizeSedIdParam, replaceBrowserPath, resolveSedDeepLink } from '@/lib/sedLinks';
 import { normalizeSedId } from '@/lib/sedUtils';
+import { completeManualFault, createManualFaultDraft, saveManualFaultToSupabase } from '@/lib/manualFaultEntry';
 import { buildManualEdgeCatalog, findUniqueAnalyticalEdgePath, resolveManualGroupEdgeRefs, splitEdgeIdsIntoConnectedComponents } from '@/lib/manualAnalysisUnits';
 import { buildEconomicAnalysisInput } from '@/lib/economicAnalysisInput';
 import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
 import {
-  COORD_SOURCE,
   coordinatePairsEqual,
   formatGeoreferenceSummary,
   georeferenceFaultBatch,
@@ -174,6 +174,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   // Estado del Formulario
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingPointIndex, setEditingPointIndex] = useState(null);
+  const [newFaultDraft, setNewFaultDraft] = useState(null);
 
   // La copia local editable nunca sincroniza escrituras con Supabase.
   const isSupabaseSource = dataSource.kind === 'SUPABASE';
@@ -1283,40 +1284,41 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     const allowed = await checkEditPermission();
     if (!allowed) return;
     
-    const pointNum = numberedPointsList.length + 1;
-    const newPoint = {
-      number: pointNum,
-      coords: [latlng.lat, latlng.lng],
-      ticket: `TK-${Math.floor(Math.random()*90000+10000)}`,
-      horaInicio: new Date().toLocaleString(),
-      zona: 'Zona Lima Norte',
-      set: 'SET San Juan',
-      alimentador: 'Alim 1',
-      nota: 'Empalme sustituido',
-      odm: `ODM-${Math.floor(Math.random()*9000+1000)}`,
-      suministro: 'Suministro',
-      sedLlave: `${currentSedId}-${currentLlaveId}`,
-      sed: currentSedId,
-      llaveSistema: currentLlaveId,
-      llaveCampo: `${currentLlaveId} (Campo)`,
-      falla: 'Cable subterráneo cortado',
-      causa: 'Excavación externa',
-      coordSource: COORD_SOURCE.MANUAL,
-      coordLookupSuministro: null
-    };
-    
-    const updated = [...numberedPointsList, newPoint];
-    setNumberedPointsList(updated);
-    setEditingPointIndex(updated.length - 1);
-    setIsFormOpen(true);
+    try {
+      setNewFaultDraft(createManualFaultDraft(latlng, currentSedId, currentLlaveId));
+      setEditingPointIndex(null);
+      setIsFormOpen(true);
+    } catch (error) {
+      alert(error.message);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relocatingPointIndex, isAddPointMode, isPresentationMode, numberedPointsList, currentSedId, currentLlaveId, isEditable]);
 
   // Guardado de Falla
-  function handleSavePoint(pointData) {
+  async function handleSavePoint(pointData) {
     if (!isEditable) {
+      throw new Error('Este proyecto local está en modo solo lectura.');
+    }
+    if (editingPointIndex === null) {
+      if (!newFaultDraft) throw new Error('Marca primero la ubicación de la falla en el mapa.');
+      const sourceRecordId = `manual:${globalThis.crypto.randomUUID()}`;
+      const newPoint = {
+        ...completeManualFault(newFaultDraft, pointData),
+        number: numberedPointsList.length + 1,
+        sourceRecordId
+      };
+      if (isSupabaseSource) {
+        if (!isSupabaseConfigured || !supabase) throw new Error('No hay conexión configurada con la Base Principal.');
+        const record = { ...buildFallaRecord(newPoint), period_key: newPoint.periodKey, source_record_id: sourceRecordId };
+        newPoint.id = await saveManualFaultToSupabase(supabase, record, newPoint.periodKey, formatPeriodLabel(newPoint.periodKey));
+        setFaultPeriods(previous => previous.some(item => item.periodKey === newPoint.periodKey)
+          ? previous.map(item => item.periodKey === newPoint.periodKey ? { ...item, rowCount: Number(item.rowCount || 0) + 1 } : item)
+          : [{ periodKey: newPoint.periodKey, label: formatPeriodLabel(newPoint.periodKey), rowCount: 1 }, ...previous]);
+        updateSelectedPeriodKeys([...selectedPeriodKeysRef.current, newPoint.periodKey], { manual: true });
+      }
+      setNumberedPointsList(previous => [...previous, newPoint]);
+      setNewFaultDraft(null);
       setIsFormOpen(false);
-      setEditingPointIndex(null);
       return;
     }
     const updated = [...numberedPointsList];
@@ -1324,6 +1326,11 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     let savedPoint = {
       ...(existingPoint || {}),
       ...pointData,
+      falla: pointData.fallaReal,
+      setAlimentador: pointData.setAlimentador,
+      set: String(pointData.setAlimentador || '').split('/')[0]?.trim() || '',
+      alimentador: String(pointData.setAlimentador || '').split('/').slice(1).join('/').trim(),
+      periodKey: derivePeriodKeyFromStartTime(pointData.horaInicio) || existingPoint?.periodKey || null,
       suministro: normalizeSuministro(pointData.suministro) || '',
       coordLookupSuministro: existingPoint?.coordLookupSuministro || pointData.coordLookupSuministro || null
     };
@@ -1551,6 +1558,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   async function handleRelocatePoint(index) {
     const allowed = await checkEditPermission();
     if (!allowed) return;
+    setIsAddPointMode(false);
     setRelocatingPointIndex(index);
     alert('Haz clic en el mapa en la nueva ubicación.');
   }
@@ -1945,6 +1953,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     if (!isSegmentSelectionMode) {
       const allowed = await checkEditPermission();
       if (!allowed) return;
+      setIsAddPointMode(false);
       setManualSelectionTopology(createCurrentManualSelectionTopology());
       setManualPathStartEdgeId(null);
       setManualPathSelectionComplete(false);
@@ -1961,6 +1970,14 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       setManualPathSelectionComplete(false);
       setManualSelectionMessage('');
     }
+  }
+
+  function handleSetAddPointMode(active) {
+    if (active) {
+      setIsSegmentSelectionMode(false);
+      setRelocatingPointIndex(null);
+    }
+    setIsAddPointMode(active);
   }
 
   async function handleStartEditCableGroup(group) {
@@ -2220,7 +2237,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
           showFullSedView={showFullSedView}
           onToggleFullSedView={handleToggleFullSedView}
           isAddPointMode={isAddPointMode}
-          setIsAddPointMode={setIsAddPointMode}
+          setIsAddPointMode={handleSetAddPointMode}
           isPresentationMode={isPresentationMode}
           isEditable={isEditable}
           canSyncToMainDatabase={isSupabaseSource}
@@ -2364,9 +2381,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       
       <FaultForm
         isOpen={isEditable && isFormOpen}
-        onClose={() => { setIsFormOpen(false); setEditingPointIndex(null); }}
+        onClose={() => { setIsFormOpen(false); setEditingPointIndex(null); setNewFaultDraft(null); }}
         onSave={handleSavePoint}
         editingPoint={editingPointIndex !== null ? numberedPointsList[editingPointIndex] : null}
+        initialCoordinates={newFaultDraft?.coords || null}
         defaultSedLlave={`${currentSedId}-${currentLlaveId}`}
       />
 

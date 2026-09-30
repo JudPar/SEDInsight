@@ -578,6 +578,11 @@ const MapViewer = forwardRef(({
       const marker = L.marker(markerCoord, { icon: createPointIcon(item) }).addTo(targetLayer);
       marker.bindPopup(buildPopupContent(item));
       marker.on('click', () => {
+        if (isAddPointMode) {
+          marker.closePopup();
+          onMapClickRef.current?.(marker.getLatLng());
+          return;
+        }
         if (!isPresentationMode && isEditable && onPointClick) onPointClick(item.pt.originalIndex);
       });
       return marker;
@@ -696,12 +701,15 @@ const MapViewer = forwardRef(({
           iconAnchor: [16, 16]
         });
         const groupMarker = L.marker(centerLatLng, { icon: groupIcon, zIndexOffset: 2500 }).addTo(pointsGroup);
-        groupMarker.on('click', () => openSpiderfy(groupId));
+        groupMarker.on('click', () => {
+          if (isAddPointMode) onMapClickRef.current?.(groupMarker.getLatLng());
+          else openSpiderfy(groupId);
+        });
       });
     }
 
     return () => clearSpiderfy();
-  }, [faultPoints, isPresentationMode, isEditable, onPointClick, mapViewport, sedId, currentTheme]);
+  }, [faultPoints, isAddPointMode, isPresentationMode, isEditable, onPointClick, mapViewport, sedId, currentTheme]);
 
   // Manejar modo de añadir punto / reubicar
   useEffect(() => {

@@ -11,7 +11,8 @@ export default function FaultForm({
   onClose,
   onSave,
   editingPoint,
-  defaultSedLlave
+  defaultSedLlave,
+  initialCoordinates = null
 }) {
   const [formData, setFormData] = useState({
     ticket: '',
@@ -33,10 +34,13 @@ export default function FaultForm({
 
   const [fotos, setFotos] = useState([]);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const photoInputRef = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
+      setSaveError('');
       if (editingPoint) {
         const isMulti = editingPoint.coords && Array.isArray(editingPoint.coords[0]);
         const pt1 = isMulti ? editingPoint.coords[0] : editingPoint.coords;
@@ -63,7 +67,7 @@ export default function FaultForm({
       } else {
         setFormData({
           ticket: '',
-          horaInicio: new Date().toLocaleString(),
+          horaInicio: new Date().toLocaleString('es-PE'),
           suministro: '',
           sedLlave: defaultSedLlave || '',
           odm: '',
@@ -73,15 +77,15 @@ export default function FaultForm({
           causa: '',
           nota: '',
           linkCroquis: '',
-          latitud: '',
-          longitud: '',
+          latitud: initialCoordinates?.[0] ?? '',
+          longitud: initialCoordinates?.[1] ?? '',
           latitud2: '',
           longitud2: ''
         });
         setFotos([]);
       }
     }
-  }, [isOpen, editingPoint, defaultSedLlave]);
+  }, [isOpen, editingPoint, defaultSedLlave, initialCoordinates]);
 
   const handleChange = (e) => {
     const { id, value } = e.target;
@@ -158,9 +162,14 @@ export default function FaultForm({
     setFotos(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-
+    if (isSaving) return;
+    setSaveError('');
+    if (Boolean(String(formData.latitud2).trim()) !== Boolean(String(formData.longitud2).trim())) {
+      setSaveError('Completa ambas coordenadas del segundo punto o déjalas vacías.');
+      return;
+    }
     let coords = null;
     if (formData.latitud && formData.longitud) {
       const p1 = [parseFloat(formData.latitud), parseFloat(formData.longitud)];
@@ -172,7 +181,14 @@ export default function FaultForm({
       }
     }
 
-    onSave({ ...formData, coords, fotos });
+    setIsSaving(true);
+    try {
+      await onSave({ ...formData, coords, fotos });
+    } catch (error) {
+      setSaveError(error?.message || 'No se pudo guardar la falla. Inténtalo nuevamente.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -183,8 +199,8 @@ export default function FaultForm({
     <div className="modal-backdrop active">
       <div className="point-form-modal" style={{ width: '620px', maxHeight: '90vh', overflowY: 'auto' }}>
         <h3 style={{ color: 'var(--accent-cyan)', fontSize: '14px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between' }}>
-          <span>📍 {editingPoint ? `Datos de Falla Reparada #${displayNum}` : 'Registro de Falla Atendida'}</span>
-          <span onClick={onClose} style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>&times;</span>
+          <span>📍 {editingPoint ? `Datos de Falla Reparada #${displayNum}` : 'Nueva falla manual'}</span>
+          <span onClick={() => { if (!isSaving) onClose(); }} style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>&times;</span>
         </h3>
 
         {editingPoint?.coordSource && (
@@ -214,7 +230,7 @@ export default function FaultForm({
             </div>
             <div className="form-group">
               <label>SED-LLAVE:</label>
-              <input type="text" id="sedLlave" className="input-control" value={formData.sedLlave} onChange={handleChange} placeholder="Ej: 00007S-5SP" />
+              <input type="text" id="sedLlave" className="input-control" value={formData.sedLlave} onChange={handleChange} readOnly={!editingPoint} placeholder="Ej: 00007S-5SP" />
             </div>
             <div className="form-group">
               <label>ODM:</label>
@@ -348,11 +364,12 @@ export default function FaultForm({
             </div>
           </div>
 
+          {saveError && <div role="alert" style={{ marginTop: '12px', color: 'var(--accent-danger)' }}>{saveError}</div>}
           <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
-            <button type="submit" className="btn btn-green" style={{ flex: 1 }}>
-              <i className="fa-solid fa-floppy-disk"></i> Guardar Registro de Falla
+            <button type="submit" className="btn btn-green" style={{ flex: 1 }} disabled={isSaving}>
+              <i className="fa-solid fa-floppy-disk"></i> {isSaving ? 'Guardando...' : 'Guardar Registro de Falla'}
             </button>
-            <button type="button" className="btn btn-outline" onClick={onClose} style={{ flex: 1 }}>
+            <button type="button" className="btn btn-outline" onClick={onClose} style={{ flex: 1 }} disabled={isSaving}>
               Cancelar
             </button>
           </div>
