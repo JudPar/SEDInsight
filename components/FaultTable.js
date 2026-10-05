@@ -49,7 +49,7 @@ export default function FaultTable({ points = [], faultAssignments = [], showAct
 
   function renderRows(full = false) {
     return points.map((pt, idx) => {
-      const displayNum = pt.localNumber || pt.number || idx + 1;
+      const displayNum = pt.number || pt.localNumber || idx + 1;
       const isMulti = Array.isArray(pt.coords?.[0]);
       const hasCoords = Boolean(pt.coords && (isMulti ? pt.coords.length : !isNaN(pt.coords[0]) && !isNaN(pt.coords[1])));
       const croquis = pt.linkCroquis || pt.link_croquis || pt.croquis;

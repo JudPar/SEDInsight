@@ -178,7 +178,7 @@ test('local projects ignore the Base Principal period filter', () => {
   const sidebarSource = readFileSync(new URL('../components/Sidebar.js', import.meta.url), 'utf8');
   const dataPanelSource = readFileSync(new URL('../components/DataManagementPanel.js', import.meta.url), 'utf8');
   assert.match(pageSource, /const activePeriodKeys = isSupabaseSource[\s\S]*?summarizePeriods\(numberedPointsList\)/);
-  assert.match(pageSource, /isSupabaseSource \? filterFaultsByPeriods\(numberedPointsList, activePeriodKeys\) : numberedPointsList/);
+  assert.match(pageSource, /isSupabaseSource \? filterFaultsByPeriods\(indexedFaultPoints, activePeriodKeys\) : indexedFaultPoints/);
   assert.doesNotMatch(pageSource, /const localSelection = resolveActivePeriodSelection/);
   assert.match(pageSource, /periodFilteringEnabled=\{isSupabaseSource\}/);
   assert.match(sidebarSource, /periodFilteringEnabled=\{periodFilteringEnabled\}/);

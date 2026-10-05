@@ -637,7 +637,7 @@ const MapViewer = forwardRef(({
       faultPoints.forEach((pt, pointIndex) => {
         const visibleCoords = pt.mapCoords || pt.coords;
         if (!visibleCoords) return;
-        const displayNum = pt.localNumber || pt.number || '';
+        const displayNum = pt.number || pt.localNumber || '';
         let coordsList = [];
         if (Array.isArray(visibleCoords)) {
           coordsList = Array.isArray(visibleCoords[0]) ? visibleCoords.map(c => fixCoord(c)) : [fixCoord(visibleCoords)];

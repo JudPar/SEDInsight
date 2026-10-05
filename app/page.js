@@ -30,7 +30,7 @@ import { derivePeriodKeyFromStartTime, georeferenceMonthlyFaultRows, normalizeFa
 import { buildSedPeriodMetrics, reconcileSedPeriodMetrics, sortSedPeriodMetrics } from '@/lib/sedMetrics';
 import { buildSedPath, buildSedUrl, normalizeSedIdParam, replaceBrowserPath, resolveSedDeepLink } from '@/lib/sedLinks';
 import { normalizeSedId } from '@/lib/sedUtils';
-import { completeManualFault, createManualFaultDraft, saveManualFaultToSupabase } from '@/lib/manualFaultEntry';
+import { assertFaultIdentifiersAvailable, completeManualFault, createManualFaultDraft, saveManualFaultToSupabase } from '@/lib/manualFaultEntry';
 import { buildManualEdgeCatalog, findUniqueAnalyticalEdgePath, resolveManualGroupEdgeRefs, splitEdgeIdsIntoConnectedComponents } from '@/lib/manualAnalysisUnits';
 import { buildEconomicAnalysisInput } from '@/lib/economicAnalysisInput';
 import { GEOPLUZ_PROJECT_CONFIG_FORMAT, GEOPLUZ_PROJECT_CONFIG_VERSION, validateWorkProjectConfig } from '@/lib/workProjectConfig';
@@ -50,7 +50,7 @@ const MapViewer = dynamic(() => import('@/components/MapViewer'), { ssr: false }
 function mapSupabaseFaultRows(fallasData = []) {
   return fallasData.map((falla, index) => ({
     id: falla.id,
-    number: index + 1,
+    number: Number.isInteger(Number(falla.id)) ? Number(falla.id) : index + 1,
     coords: isValidCoordinatePair(falla) ? [falla.latitud, falla.longitud] : null,
     ticket: falla.ticket || '',
     horaInicio: falla.hora_inicio || '',
@@ -640,8 +640,11 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   const activePeriodKeys = isSupabaseSource
     ? selectedPeriodKeys
     : [...summarizePeriods(numberedPointsList).keys()].sort();
+  // Las acciones de la tabla deben conservar el índice de la lista completa,
+  // aunque el periodo, la SED o la llave oculten filas anteriores.
+  const indexedFaultPoints = numberedPointsList.map((point, originalIndex) => ({ ...point, originalIndex }));
   const periodFilteredPoints = deduplicateSelectedFaults(
-    isSupabaseSource ? filterFaultsByPeriods(numberedPointsList, activePeriodKeys) : numberedPointsList
+    isSupabaseSource ? filterFaultsByPeriods(indexedFaultPoints, activePeriodKeys) : indexedFaultPoints
   ).faults;
   const sedFaultRanking = sortSedPeriodMetrics(buildSedPeriodMetrics(localDatabase, periodFilteredPoints, sedMonthlyMetrics, activePeriodKeys), 'faultCount')
     .filter(item => activeWorkSedIds.length === 0 || activeWorkSedIds.includes(item.sedId))
@@ -1266,16 +1269,17 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         setRelocatingPointIndex(null);
         return;
       }
-      setNumberedPointsList(prev => {
-        const updated = [...prev];
-        const targetPoint = updated[relocatingPointIndex];
-        if (targetPoint) {
-          updated[relocatingPointIndex] = markCoordinatesManual(targetPoint, [latlng.lat, latlng.lng]);
-          saveFallaToSupabase(updated[relocatingPointIndex]);
-          alert(`✅ Punto de Falla #${targetPoint.localNumber || targetPoint.number || ''} reubicado con éxito en: ${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`);
+      const targetPoint = numberedPointsList[relocatingPointIndex];
+      if (targetPoint) {
+        const relocatedPoint = markCoordinatesManual(targetPoint, [latlng.lat, latlng.lng]);
+        try {
+          if (isSupabaseSource) await saveFallaToSupabase(relocatedPoint);
+          setNumberedPointsList(prev => prev.map((point, index) => index === relocatingPointIndex ? relocatedPoint : point));
+          alert(`✅ Punto de Falla #${targetPoint.number || targetPoint.localNumber || ''} reubicado con éxito en: ${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`);
+        } catch (error) {
+          alert(`No se pudo reubicar la falla: ${error?.message || 'error desconocido'}`);
         }
-        return updated;
-      });
+      }
       setRelocatingPointIndex(null);
       return;
     }
@@ -1292,7 +1296,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       alert(error.message);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relocatingPointIndex, isAddPointMode, isPresentationMode, numberedPointsList, currentSedId, currentLlaveId, isEditable]);
+  }, [relocatingPointIndex, isAddPointMode, isPresentationMode, numberedPointsList, currentSedId, currentLlaveId, isEditable, isSupabaseSource]);
 
   // Guardado de Falla
   async function handleSavePoint(pointData) {
@@ -1307,16 +1311,21 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         number: numberedPointsList.length + 1,
         sourceRecordId
       };
+      await assertFaultIdentifiersAvailable(isSupabaseSource ? supabase : null, numberedPointsList, newPoint);
       if (isSupabaseSource) {
         if (!isSupabaseConfigured || !supabase) throw new Error('No hay conexión configurada con la Base Principal.');
         const record = { ...buildFallaRecord(newPoint), period_key: newPoint.periodKey, source_record_id: sourceRecordId };
         newPoint.id = await saveManualFaultToSupabase(supabase, record, newPoint.periodKey, formatPeriodLabel(newPoint.periodKey));
+        newPoint.number = newPoint.id;
         setFaultPeriods(previous => previous.some(item => item.periodKey === newPoint.periodKey)
           ? previous.map(item => item.periodKey === newPoint.periodKey ? { ...item, rowCount: Number(item.rowCount || 0) + 1 } : item)
           : [{ periodKey: newPoint.periodKey, label: formatPeriodLabel(newPoint.periodKey), rowCount: 1 }, ...previous]);
         updateSelectedPeriodKeys([...selectedPeriodKeysRef.current, newPoint.periodKey], { manual: true });
       }
       setNumberedPointsList(previous => [...previous, newPoint]);
+      setCircuitPhase1Analysis(null);
+      setSelectedAnalysisSegmentId(null);
+      setFilterByAnalysisSegment(false);
       setNewFaultDraft(null);
       setIsFormOpen(false);
       return;
@@ -1337,6 +1346,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
     if (!existingPoint || !coordinatePairsEqual(existingPoint, savedPoint)) {
       savedPoint = markCoordinatesManual(savedPoint, savedPoint.coords);
     }
+    await assertFaultIdentifiersAvailable(isSupabaseSource ? supabase : null,
+      updated.filter((_, index) => index !== editingPointIndex), savedPoint, savedPoint.id);
+    if (isSupabaseSource) await saveFallaToSupabase(savedPoint);
     if (editingPointIndex !== null && updated[editingPointIndex]) {
       updated[editingPointIndex] = savedPoint;
     } else {
@@ -1344,9 +1356,11 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
        updated.push(savedPoint);
     }
     setNumberedPointsList(updated);
+    setCircuitPhase1Analysis(null);
+    setSelectedAnalysisSegmentId(null);
+    setFilterByAnalysisSegment(false);
     setIsFormOpen(false);
     
-    saveFallaToSupabase(updated[editingPointIndex !== null ? editingPointIndex : updated.length - 1]);
     setEditingPointIndex(null);
   }
 
@@ -1356,12 +1370,12 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
       sed_id: point.sed,
       llave_code: point.llaveSistema,
       sed_llave: point.sedLlave,
-      ticket: point.ticket,
+      ticket: point.ticket || null,
       suministro: normalizeSuministro(point.suministro),
       falla_real: point.falla,
       causa: point.causa,
       nota: point.nota,
-      odm: point.odm,
+      odm: point.odm || null,
       zona: point.zona,
       set_alimentador: `${point.set || ''} / ${point.alimentador || ''}`,
       hora_inicio: point.horaInicio,
@@ -1399,26 +1413,12 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   }
 
   async function saveFallaToSupabase(point) {
-    if (!isSupabaseSource) return;
-    if (!isSupabaseConfigured || !supabase) return;
-    try {
-      const record = buildFallaRecord(point);
-      
-      if (point.id) {
-        await supabase.from('fallas').update(record).eq('id', point.id);
-      } else {
-        let { data, error } = await supabase.from('fallas').upsert(record, { onConflict: 'ticket' }).select();
-        if (error) {
-          const res = await supabase.from('fallas').insert(record).select();
-          data = res.data;
-        }
-        if (data && data.length > 0) {
-            // Update the id of the point in state so future edits use update instead of insert
-            setNumberedPointsList(prev => prev.map(p => (p.ticket && p.ticket === point.ticket) || p.number === point.number ? { ...p, id: data[0].id } : p));
-        }
-      }
-    } catch(err) {
-      console.warn('Error guardando falla en Supabase:', err.message);
+    if (!isSupabaseConfigured || !supabase) throw new Error('No hay conexión configurada con la Base Principal.');
+    if (point?.id == null) throw new Error('La falla no tiene un ID confirmado; recarga la base antes de editarla.');
+    const { data, error } = await supabase.from('fallas').update(buildFallaRecord(point))
+      .eq('id', point.id).select('id');
+    if (error || !data?.some(row => String(row.id) === String(point.id))) {
+      throw new Error(`No se pudo actualizar la falla: ${error?.message || 'la base no confirmó el registro'}`);
     }
   }
 
@@ -1437,6 +1437,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         .filter((_, itemIndex) => itemIndex !== index)
         .map((item, itemIndex) => ({ ...item, number: itemIndex + 1 }))
       );
+      setCircuitPhase1Analysis(null);
+      setSelectedAnalysisSegmentId(null);
+      setFilterByAnalysisSegment(false);
       setEditingPointIndex(null);
       setIsFormOpen(false);
       setRelocatingPointIndex(null);
@@ -1470,8 +1473,10 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
 
       setNumberedPointsList(prev => prev
         .filter(item => item.id !== point.id)
-        .map((item, itemIndex) => ({ ...item, number: itemIndex + 1 }))
       );
+      setCircuitPhase1Analysis(null);
+      setSelectedAnalysisSegmentId(null);
+      setFilterByAnalysisSegment(false);
       if (editingPointIndex === index) {
         setEditingPointIndex(null);
         setIsFormOpen(false);

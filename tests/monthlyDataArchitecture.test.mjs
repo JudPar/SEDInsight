@@ -351,7 +351,7 @@ test('period-selected faults drive Supabase while local projects keep their comp
   assert.match(page, /fetchSupabaseFaultsForPeriods/);
   assert.match(page, /\.in\('period_key', monthlyKeys\)/);
   assert.match(page, /\.is\('period_key', null\)/);
-  assert.match(page, /isSupabaseSource \? filterFaultsByPeriods\(numberedPointsList, activePeriodKeys\) : numberedPointsList/);
+  assert.match(page, /isSupabaseSource \? filterFaultsByPeriods\(indexedFaultPoints, activePeriodKeys\) : indexedFaultPoints/);
   assert.match(page, /faultPoints=\{periodFilteredPoints\}/);
   assert.match(page, /selectedLlavePoints = filterFaultsForCircuitView\(periodFilteredPoints/);
   assert.match(page, /analyzeCircuit\(linesData, selectedLlavePoints/);

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { buildSedOverviewLlaves, filterFaultsForCircuitView, getStableLlaveColor } from '../lib/sedOverview.js';
+import { filterFaultsByPeriods } from '../lib/faultPeriods.js';
 
 const sed = {
   llaves: {
@@ -33,6 +34,24 @@ test('SED overview exposes every llave and every line with deterministic colors'
 test('normal view keeps the existing SED and llave filter', () => {
   const visible = filterFaultsForCircuitView(faults, { sedId: '00338S', llaveId: 'L1', showFullSed: false });
   assert.deepEqual(visible.map(point => point.id), [1]);
+});
+
+test('filtered circuit rows retain their index in the full fault list for edit and delete', () => {
+  const allFaults = [
+    { id: 10, periodKey: '2026-01', sed: '00338S', llaveSistema: 'L1' },
+    { id: 20, periodKey: '2026-02', sed: '00813S', llaveSistema: 'A1' },
+    { id: 30, periodKey: '2026-02', sed: '00338S', llaveSistema: 'L1' }
+  ];
+  const indexed = allFaults.map((fault, originalIndex) => ({ ...fault, originalIndex }));
+  const selectedPeriod = filterFaultsByPeriods(indexed, ['2026-02']);
+  const visible = filterFaultsForCircuitView(selectedPeriod, {
+    sedId: '00338S', llaveId: 'L1', showFullSed: false
+  });
+
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].id, 30);
+  assert.equal(visible[0].originalIndex, 2);
+  assert.equal(allFaults[visible[0].originalIndex].id, visible[0].id);
 });
 
 test('SP and S circuit aliases match only when the permanent circuit identity is unique', () => {

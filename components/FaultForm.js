@@ -193,7 +193,7 @@ export default function FaultForm({
 
   if (!isOpen) return null;
 
-  const displayNum = editingPoint ? (editingPoint.localNumber || editingPoint.number) : '#';
+  const displayNum = editingPoint ? (editingPoint.number || editingPoint.localNumber) : 'Al guardar';
 
   return (
     <div className="modal-backdrop active">
