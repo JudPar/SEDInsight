@@ -11,6 +11,7 @@ export default function FaultForm({
   onClose,
   onSave,
   editingPoint,
+  displayNumber,
   defaultSedLlave,
   initialCoordinates = null
 }) {
@@ -193,7 +194,7 @@ export default function FaultForm({
 
   if (!isOpen) return null;
 
-  const displayNum = editingPoint ? (editingPoint.number || editingPoint.localNumber) : 'Al guardar';
+  const displayNum = editingPoint ? (displayNumber ?? editingPoint.localNumber ?? editingPoint.number) : 'Al guardar';
 
   return (
     <div className="modal-backdrop active">
@@ -213,7 +214,7 @@ export default function FaultForm({
         <form onSubmit={handleSubmit}>
           <div className="form-grid">
             <div className="form-group">
-              <label>NRO (Auto):</label>
+              <label>NRO (vista):</label>
               <input type="text" className="input-control" value={displayNum} readOnly />
             </div>
             <div className="form-group">

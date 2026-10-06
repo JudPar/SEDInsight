@@ -16,7 +16,7 @@ import { exportExcelBySed } from '@/lib/excelUtils';
 import { exportPdfReport } from '@/lib/pdfUtils';
 import { buildReportModel } from '@/lib/reportModel';
 import { clearActiveLocalProject, clearExpectedLocalProject, getActiveLocalProject, getActiveLocalProjectState, getCachedSeds, getExpectedLocalProject, getLocalProject, invalidateSedsCache, listLocalProjects, listLocalWorkProjectConfigs, markLocalProjectExpected, removeLocalProject, removeLocalWorkProjectConfig, saveLocalWorkProjectConfig, setActiveLocalProject, setCachedSeds } from '@/lib/dbCache';
-import { buildSedOverviewLlaves, filterFaultsForCircuitView } from '@/lib/sedOverview';
+import { buildSedOverviewLlaves, filterFaultsForCircuitView, numberVisibleFaults } from '@/lib/sedOverview';
 import { analyzeCircuit, analyzeCircuitPhase1, CIRCUIT_STATUSES, hydrateLlave, serializeLlaveLines } from '@/lib/circuitAnalysis';
 import { applyAnalyticalFaultCoordinates, buildAnalysisSegmentFaultView, resolveAnalysisSegment } from '@/lib/analysisSegments';
 import { buildCircuitTopology } from '@/lib/circuitTopology';
@@ -1780,9 +1780,9 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
   )
     .filter(point => point?.relocatedViaClient && Number.isInteger(point?.originalIndex))
     .map(point => [point.originalIndex, point]));
-  const visibleFaultPoints = showFullSedView
+  const visibleFaultPoints = numberVisibleFaults(showFullSedView
     ? fullSedPoints.map(point => relocatedCircuitFaultsByOriginalIndex.get(point.originalIndex) || point)
-    : analysisSegmentFaultView.faults;
+    : analysisSegmentFaultView.faults);
   const sedOverviewLlaves = buildSedOverviewLlaves(localDatabase[currentSedId], currentLlaveId);
   const selectedAnalysisSegmentEdges = selectedAnalysisSegment
     ? [...selectedAnalysisSegment.edgeIds, ...selectedAnalysisSegment.connectorEdgeIds]
@@ -2389,6 +2389,7 @@ export default function Page({ requestedSedId = '', isSedRoute = false }) {
         onClose={() => { setIsFormOpen(false); setEditingPointIndex(null); setNewFaultDraft(null); }}
         onSave={handleSavePoint}
         editingPoint={editingPointIndex !== null ? numberedPointsList[editingPointIndex] : null}
+        displayNumber={visibleFaultPoints.find(point => point.originalIndex === editingPointIndex)?.localNumber}
         initialCoordinates={newFaultDraft?.coords || null}
         defaultSedLlave={`${currentSedId}-${currentLlaveId}`}
       />

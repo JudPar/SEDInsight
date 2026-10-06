@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildSedOverviewLlaves, filterFaultsForCircuitView, getStableLlaveColor } from '../lib/sedOverview.js';
+import { buildSedOverviewLlaves, filterFaultsForCircuitView, getStableLlaveColor, numberVisibleFaults } from '../lib/sedOverview.js';
 import { filterFaultsByPeriods } from '../lib/faultPeriods.js';
 
 const sed = {
@@ -52,6 +52,40 @@ test('filtered circuit rows retain their index in the full fault list for edit a
   assert.equal(visible[0].id, 30);
   assert.equal(visible[0].originalIndex, 2);
   assert.equal(allFaults[visible[0].originalIndex].id, visible[0].id);
+});
+
+test('visible SED and circuit faults start at one without changing database IDs or action indexes', () => {
+  const allFaults = [
+    { id: 5342, number: 5342, sed: '00338S', llaveSistema: 'L1', originalIndex: 0 },
+    { id: 6001, number: 6001, sed: '00813S', llaveSistema: 'A1', originalIndex: 1 },
+    { id: 5700, number: 5700, sed: '00338S', llaveSistema: 'L2', originalIndex: 2 },
+    { id: 5400, number: 5400, sed: '00338S', llaveSistema: 'L1', originalIndex: 3 }
+  ];
+  const fullSed = numberVisibleFaults(filterFaultsForCircuitView(allFaults, { sedId: '00338S', showFullSed: true }));
+  assert.deepEqual(fullSed.map(point => point.localNumber), [1, 2, 3]);
+  assert.deepEqual(fullSed.map(point => point.id), [5342, 5700, 5400]);
+  const circuit = numberVisibleFaults(filterFaultsForCircuitView(allFaults, { sedId: '00338S', llaveId: 'L1' }));
+  assert.deepEqual(circuit.map(point => point.localNumber), [1, 2]);
+  assert.deepEqual(circuit.map(point => point.originalIndex), [0, 3]);
+  const filtered = numberVisibleFaults(circuit.filter(point => point.id === 5400));
+  assert.deepEqual(filtered.map(point => [point.localNumber, point.number, point.id, point.originalIndex]), [[1, 5400, 5400, 3]]);
+  const otherSed = numberVisibleFaults(filterFaultsForCircuitView(allFaults, { sedId: '00813S', llaveId: 'A1' }));
+  assert.deepEqual(otherSed.map(point => [point.localNumber, point.id]), [[1, 6001]]);
+  assert.equal(allFaults[3].localNumber, undefined);
+});
+
+test('table, map and edit form display local numbers while keeping stable action identities', () => {
+  const page = readFileSync(new URL('../app/page.js', import.meta.url), 'utf8');
+  const table = readFileSync(new URL('../components/FaultTable.js', import.meta.url), 'utf8');
+  const map = readFileSync(new URL('../components/MapViewer.js', import.meta.url), 'utf8');
+  const form = readFileSync(new URL('../components/FaultForm.js', import.meta.url), 'utf8');
+  assert.match(page, /const visibleFaultPoints = numberVisibleFaults\(/);
+  assert.match(page, /displayNumber=\{visibleFaultPoints\.find\(point => point\.originalIndex === editingPointIndex\)\?\.localNumber\}/);
+  assert.match(table, /pt\.localNumber \?\? pt\.number/);
+  assert.match(table, /pt\.originalIndex !== undefined \? pt\.originalIndex : idx/);
+  assert.match(map, /pt\.localNumber \?\? pt\.number/);
+  assert.match(map, /data-id="\$\{escapeHtml\(pt\.originalIndex\)\}"/);
+  assert.match(form, /displayNumber \?\? editingPoint\.localNumber \?\? editingPoint\.number/);
 });
 
 test('SP and S circuit aliases match only when the permanent circuit identity is unique', () => {
